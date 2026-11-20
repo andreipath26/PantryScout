@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useMemo, useState } from 'react';
+import { fetchRecipePage } from './recipe-import';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -30,7 +31,7 @@ type Recipe = {
 };
 type PantryItem = { id: string; name: string; quantity: string; expires?: string };
 type ShopItem = { id: string; name: string; checked: boolean };
-type ModalKind = 'import' | 'create' | 'pantry' | 'shop-add' | 'recipe' | 'cook' | 'picker' | null;
+type ModalKind = 'import' | 'create' | 'edit' | 'pantry' | 'shop-add' | 'recipe' | 'cook' | 'picker' | null;
 
 const STORAGE_KEY = 'pantryscout.v1';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -120,6 +121,9 @@ export default function App() {
   const [newSteps, setNewSteps] = useState('');
   const [importUrl, setImportUrl] = useState('');
   const [importText, setImportText] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [cookStep, setCookStep] = useState(0);
   const [pickerDay, setPickerDay] = useState('Mon');
 
@@ -184,12 +188,46 @@ export default function App() {
     };
     setRecipes((items) => [item, ...items]); setNewTitle(''); setNewIngredients(''); setNewSteps(''); setModal(null); setTab('Recipes');
   }
-  function importRecipe() {
+  function beginEditRecipe(recipe: Recipe) {
+    setEditingId(recipe.id); setNewTitle(recipe.title); setNewIngredients(recipe.ingredients.join('\n')); setNewSteps(recipe.steps.join('\n')); setModal('edit');
+  }
+  function saveEditedRecipe() {
+    if (!editingId || !newTitle.trim()) return;
+    const ingredients = newIngredients.split(/\n|,/).map((x) => x.trim()).filter(Boolean);
+    const steps = newSteps.split(/\n/).map((x) => x.trim()).filter(Boolean);
+    setRecipes((items) => items.map((item) => item.id === editingId ? { ...item, title: newTitle.trim(), ingredients, steps, status: ingredients.length && steps.length ? 'ready' : 'review' } : item));
+    setSelectedRecipe((item) => item?.id === editingId ? { ...item, title: newTitle.trim(), ingredients, steps, status: ingredients.length && steps.length ? 'ready' : 'review' } : item);
+    setEditingId(null); setNewTitle(''); setNewIngredients(''); setNewSteps(''); setModal('recipe');
+  }
+  async function importRecipe() {
     if (!importUrl.trim() && !importText.trim()) return;
     const source = importUrl.trim();
-    const item = parseImportedText(importText.trim(), source || '');
-    setRecipes((items) => [item, ...items]); setImportUrl(''); setImportText(''); setModal(null); setTab('Recipes');
+    setImporting(true); setImportError('');
+    let importMessage = '';
+    let pageRecipe: Awaited<ReturnType<typeof fetchRecipePage>> = null;
+    if (source && !importText.trim()) {
+      try { pageRecipe = await fetchRecipePage(source); }
+      catch (error) {
+        importMessage = error instanceof Error ? error.message : 'The page could not be read. You can still save the link for later.';
+        setImportError(importMessage);
+      }
+    }
+    const pasted = importText.trim() ? parseImportedText(importText.trim(), source) : null;
+    const item: Recipe = pasted && (pasted.ingredients.length || pasted.steps.length)
+      ? pasted
+      : pageRecipe
+        ? { id: id(), ...pageRecipe, tags: ['Imported'], source, status: pageRecipe.ingredients.length && pageRecipe.steps.length ? 'ready' : 'review', saved: true }
+        : {
+          id: id(), title: source ? getSourceTitle(source) : pasted?.title || 'Saved recipe', description: importMessage || 'Recipe link saved. Add the ingredients and method when you review it.',
+          minutes: 30, servings: 2, ingredients: [], steps: [], tags: ['Imported'], source, status: 'review', saved: true,
+        };
+    if (!pageRecipe && source && !importText.trim() && !importMessage) {
+      importMessage = 'This site does not expose a readable recipe. The link was saved so you can complete it.';
+      item.description = importMessage;
+    }
+    setRecipes((items) => [item, ...items]); setImportUrl(''); setImportText(''); setImportError(''); setModal(null); setTab('Recipes');
     setSelectedRecipe(item); setModal('recipe');
+    setImporting(false);
   }
   function addToShopping(recipe: Recipe) {
     const missing = recipe.ingredients.filter((ingredient) => !pantry.some((item) => normalized(ingredient).includes(normalized(item.name))));
@@ -321,22 +359,30 @@ export default function App() {
       <TextInput value={newSteps} onChangeText={setNewSteps} placeholder={'Method, one step per line\nBeat the eggs...'} placeholderTextColor={COLORS.muted} style={[styles.input, styles.textArea]} multiline />
       <Button label="Save to recipes" onPress={createRecipe} />
     </>;
+    if (modal === 'edit') return <>
+      <Text style={styles.modalEyebrow}>RECIPE DETAILS</Text><Text style={styles.modalTitle}>Edit recipe</Text><Text style={styles.modalCopy}>Correct an import or update your own recipe. Put each ingredient and step on its own line.</Text>
+      <TextInput value={newTitle} onChangeText={setNewTitle} placeholder="Recipe name" placeholderTextColor={COLORS.muted} style={styles.input} autoFocus />
+      <TextInput value={newIngredients} onChangeText={setNewIngredients} placeholder="Ingredients, one per line" placeholderTextColor={COLORS.muted} style={[styles.input, styles.textArea]} multiline />
+      <TextInput value={newSteps} onChangeText={setNewSteps} placeholder="Method, one step per line" placeholderTextColor={COLORS.muted} style={[styles.input, styles.textArea]} multiline />
+      <Button label="Save changes" onPress={saveEditedRecipe} />
+    </>;
     if (modal === 'import') return <>
       <Text style={styles.modalEyebrow}>SAVE FROM ANYWHERE</Text><Text style={styles.modalTitle}>Import a recipe</Text><Text style={styles.modalCopy}>Paste a recipe link and/or its text. Keep the source attached so you can revisit it.</Text>
       <TextInput value={importUrl} onChangeText={setImportUrl} placeholder="Paste a recipe or social link" placeholderTextColor={COLORS.muted} autoCapitalize="none" keyboardType="url" style={styles.input} />
       <TextInput value={importText} onChangeText={setImportText} placeholder={'Paste recipe text here\nTitle, ingredients and method'} placeholderTextColor={COLORS.muted} style={[styles.input, styles.textArea]} multiline />
-      <Text style={styles.importNote}>If the source doesn’t provide readable recipe text, we’ll save the link in your cookbook for you to complete.</Text>
-      <Button label="Save recipe" onPress={importRecipe} />
+      <Text style={styles.importNote}>We’ll try to read recipe details published by the page. If the site blocks access, save the link and add the details yourself.</Text>
+      {importError ? <Text style={styles.reviewNote}>{importError}</Text> : null}
+      <Button label={importing ? 'Reading recipe…' : 'Import recipe'} onPress={importRecipe} />
     </>;
     if (modal === 'recipe' && selectedRecipe) return <>
       <Text style={styles.modalEyebrow}>{selectedRecipe.tags.join(' · ')}</Text><Text style={styles.modalTitle}>{selectedRecipe.title}</Text><Text style={styles.modalCopy}>{selectedRecipe.description}</Text>
       <View style={styles.detailStats}><Pill color={COLORS.orangeSoft}>{selectedRecipe.minutes} minutes</Pill><Pill>{selectedRecipe.servings} servings</Pill><Pill color={COLORS.greenSoft}>{recipeMatch(selectedRecipe, pantry)} ingredients in pantry</Pill></View>
       {selectedRecipe.source ? <Text style={styles.sourceLine}>Source saved: {selectedRecipe.source}</Text> : null}
-      {selectedRecipe.status === 'review' ? <Text style={styles.reviewBox}>This import needs details before cooking. Edit the recipe after adding ingredients and steps.</Text> : null}
+      {selectedRecipe.status === 'review' ? <Text style={styles.reviewBox}>This recipe needs a quick review before cooking.</Text> : null}
       <SectionTitle title="Ingredients" />
       {selectedRecipe.ingredients.length ? selectedRecipe.ingredients.map((ingredient, index) => <Text key={`${ingredient}-${index}`} style={styles.detailLine}>•  {ingredient}</Text>) : <Text style={styles.emptyText}>No ingredients detected yet.</Text>}
       {selectedRecipe.steps.length ? <><SectionTitle title="Method" />{selectedRecipe.steps.slice(0, 4).map((step, index) => <Text key={`${step}-${index}`} style={styles.detailStep}><Text style={styles.stepNumber}>{index + 1}. </Text>{step}</Text>)}</> : null}
-      <View style={styles.modalButtonStack}><Button label="Start cook mode" onPress={() => { setCookStep(0); setModal('cook'); }} /><Button label="Add missing ingredients to list" onPress={() => addToShopping(selectedRecipe)} secondary /></View>
+      <View style={styles.modalButtonStack}><Button label="Edit recipe" onPress={() => beginEditRecipe(selectedRecipe)} secondary /><Button label="Start cook mode" onPress={() => { setCookStep(0); setModal('cook'); }} /><Button label="Add missing ingredients to list" onPress={() => addToShopping(selectedRecipe)} secondary /></View>
     </>;
     if (modal === 'cook' && selectedRecipe) return <>
       <Text style={styles.modalEyebrow}>COOK MODE · {selectedRecipe.title}</Text><Text style={styles.modalTitle}>Step {Math.min(cookStep + 1, selectedRecipe.steps.length || 1)} of {selectedRecipe.steps.length || 1}</Text>
