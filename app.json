@@ -3,6 +3,7 @@
     "name": "PantryScout",
     "slug": "pantryscout",
     "version": "0.1.0",
+    "scheme": "pantryscout",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
@@ -18,6 +19,18 @@
         "backgroundColor": "#F7F5EF"
       }
     },
+    "plugins": [
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebPageWithMaxCount": 1
+          },
+          "androidIntentFilters": ["text/*"]
+        }
+      ]
+    ],
     "web": {
       "bundler": "metro"
     }
