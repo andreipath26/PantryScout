@@ -8,10 +8,10 @@ PantryScout is a personal cooking app built around the full path from finding a 
 
 - **Recipe inbox:** capture a recipe link or pasted recipe text, keep its source, and review the imported result. Recipe pages that publish Schema.org Recipe data are parsed into ingredients, steps, timing, and servings; other links are saved for manual completion.
 - **Personal cookbook:** save, search, tag, create, and revisit recipes.
-- **Pantry:** keep a lightweight list of ingredients and items to use soon.
+- **Pantry:** keep ingredients, quantities, and use-by dates; flag items to use soon.
 - **PantryScout ideas:** rank saved recipes by pantry match and create a flexible recipe idea from available ingredients.
 - **Meal planner:** assign cookbook recipes to days of the week.
-- **Shopping list:** combine missing ingredients from recipes and plans, check items off, and add freeform items.
+- **Shopping list:** combine missing ingredients from recipes and plans, deduplicate common ingredient names, check items off, and add freeform items.
 - **Cook mode:** follow one recipe step at a time from a phone.
 
 ## Current build
