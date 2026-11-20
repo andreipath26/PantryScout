@@ -78,6 +78,29 @@ const COLORS = {
 
 function id() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 function normalized(value: string) { return value.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim(); }
+function ingredientKey(value: string) {
+  return normalized(value)
+    .replace(/^\d+(?:\s+\d+\/\d+|\/\d+)?\s*/, '')
+    .replace(/^(?:g|kg|mg|ml|l|cl|oz|lb|lbs|cup|cups|tbsp|tsp|tablespoon|teaspoon|can|cans|tin|tins|clove|cloves|handful|handfuls|piece|pieces|slice|slices)\s+/, '')
+    .replace(/^(?:of)\s+/, '')
+    .trim().split(/\s+/).map((word) => word.endsWith('ies') ? `${word.slice(0, -3)}y` : word.endsWith('oes') ? word.slice(0, -2) : word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word).join(' ');
+}
+function hasPantryIngredient(ingredient: string, pantry: PantryItem[]) {
+  const recipeKey = ingredientKey(ingredient);
+  return pantry.some((item) => {
+    const pantryKey = ingredientKey(item.name);
+    return pantryKey && (recipeKey === pantryKey || recipeKey.startsWith(`${pantryKey} `));
+  });
+}
+function isUseSoon(expires?: string) {
+  if (!expires) return false;
+  if (expires.toLowerCase() === 'use soon') return true;
+  const match = expires.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const expiry = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return expiry.getTime() <= today.getTime() + 3 * 24 * 60 * 60 * 1000;
+}
 function recipeMatch(recipe: Recipe, pantry: PantryItem[]) {
   const names = pantry.map((item) => normalized(item.name));
   return recipe.ingredients.filter((ingredient) => names.some((name) => name && normalized(ingredient).includes(name))).length;
@@ -115,6 +138,7 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [pantryName, setPantryName] = useState('');
   const [pantryQuantity, setPantryQuantity] = useState('1');
+  const [pantryExpiry, setPantryExpiry] = useState('');
   const [shopName, setShopName] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newIngredients, setNewIngredients] = useState('');
@@ -153,8 +177,8 @@ export default function App() {
   function openRecipe(recipe: Recipe) { setSelectedRecipe(recipe); setModal('recipe'); }
   function addPantryItem() {
     if (!pantryName.trim()) return;
-    setPantry((items) => [...items, { id: id(), name: pantryName.trim(), quantity: pantryQuantity.trim() || '1' }]);
-    setPantryName(''); setPantryQuantity('1'); setModal(null);
+    setPantry((items) => [...items, { id: id(), name: pantryName.trim(), quantity: pantryQuantity.trim() || '1', expires: pantryExpiry.trim() || undefined }]);
+    setPantryName(''); setPantryQuantity('1'); setPantryExpiry(''); setModal(null);
   }
   function addShopItem() {
     if (!shopName.trim()) return;
@@ -230,12 +254,17 @@ export default function App() {
     setImporting(false);
   }
   function addToShopping(recipe: Recipe) {
-    const missing = recipe.ingredients.filter((ingredient) => !pantry.some((item) => normalized(ingredient).includes(normalized(item.name))));
+    const missing = recipe.ingredients.filter((ingredient) => !hasPantryIngredient(ingredient, pantry));
     setShopping((items) => {
-      const have = new Set(items.map((x) => normalized(x.name)));
-      return [...items, ...missing.filter((x) => !have.has(normalized(x))).map((name) => ({ id: id(), name, checked: false }))];
+      const have = new Set(items.map((x) => ingredientKey(x.name)));
+      const additions: string[] = [];
+      for (const name of missing) { const key = ingredientKey(name); if (key && !have.has(key)) { have.add(key); additions.push(name); } }
+      return [...items, ...additions.map((name) => ({ id: id(), name, checked: false }))];
     });
     setModal(null); setTab('Shop');
+  }
+  function toggleUseSoon(itemId: string) {
+    setPantry((items) => items.map((item) => item.id === itemId ? { ...item, expires: isUseSoon(item.expires) ? undefined : 'Use soon' } : item));
   }
   function toggleShopping(itemId: string) { setShopping((items) => items.map((item) => item.id === itemId ? { ...item, checked: !item.checked } : item)); }
   function removePantry(itemId: string) { setPantry((items) => items.filter((item) => item.id !== itemId)); }
@@ -268,7 +297,7 @@ export default function App() {
 
   function renderToday() {
     const top = matches.slice(0, 3);
-    const useSoon = pantry.filter((item) => item.expires === 'Use soon');
+    const useSoon = pantry.filter((item) => isUseSoon(item.expires));
     return <>
       <View style={styles.hero}><View style={styles.heroTop}><View><Text style={styles.eyebrow}>YOUR KITCHEN, FIGURED OUT</Text><Text style={styles.heroTitle}>What sounds{ '\n' }good today?</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>A</Text></View></View>
         <Text style={styles.heroCopy}>PantryScout brings your recipes, pantry and weekly meals together.</Text>
@@ -295,10 +324,10 @@ export default function App() {
   function renderPantry() {
     return <>
       <View style={styles.pageIntro}><Text style={styles.eyebrow}>WHAT YOU HAVE AT HOME</Text><Text style={styles.pageTitle}>Pantry</Text><Text style={styles.pageCopy}>Keep a lightweight list. Add items as you shop or cook.</Text></View>
-      <View style={styles.inventorySummary}><Text style={styles.inventoryCount}>{pantry.length}</Text><View><Text style={styles.inventoryTitle}>ingredients on hand</Text><Text style={styles.inventorySub}>{pantry.filter((x) => x.expires === 'Use soon').length} marked to use soon</Text></View><Text style={styles.inventoryEmoji}>🧺</Text></View>
+      <View style={styles.inventorySummary}><Text style={styles.inventoryCount}>{pantry.length}</Text><View><Text style={styles.inventoryTitle}>ingredients on hand</Text><Text style={styles.inventorySub}>{pantry.filter((x) => isUseSoon(x.expires)).length} to use soon</Text></View><Text style={styles.inventoryEmoji}>🧺</Text></View>
       <Button label="＋ Add pantry item" onPress={() => setModal('pantry')} />
       <SectionTitle title="Your ingredients" />
-      {pantry.length ? pantry.map((item) => <View key={item.id} style={styles.ingredientRow}><View style={styles.ingredientDot}><Text>🥬</Text></View><View style={{ flex: 1 }}><Text style={styles.ingredientName}>{item.name}</Text><Text style={styles.ingredientMeta}>{item.quantity}{item.expires ? ` · ${item.expires}` : ''}</Text></View><Pressable onPress={() => removePantry(item.id)} hitSlop={10}><Text style={styles.remove}>−</Text></Pressable></View>) : <Text style={styles.emptyText}>Your pantry is empty. Add a few ingredients to get tailored ideas.</Text>}
+      {pantry.length ? pantry.map((item) => <View key={item.id} style={styles.ingredientRow}><View style={styles.ingredientDot}><Text>🥬</Text></View><View style={{ flex: 1 }}><Text style={styles.ingredientName}>{item.name}</Text><Text style={styles.ingredientMeta}>{item.quantity}{item.expires ? ` · ${item.expires}` : ''}</Text></View><Pressable onPress={() => toggleUseSoon(item.id)} hitSlop={8}><Text style={styles.link}>{isUseSoon(item.expires) ? 'Use soon ✓' : 'Use soon'}</Text></Pressable><Pressable onPress={() => removePantry(item.id)} hitSlop={10} style={{ marginLeft: 12 }}><Text style={styles.remove}>−</Text></Pressable></View>) : <Text style={styles.emptyText}>Your pantry is empty. Add a few ingredients to get tailored ideas.</Text>}
       <View style={styles.tipCard}><Text style={styles.tipTitle}>Small list, useful suggestions</Text><Text style={styles.tipCopy}>You can start with a few staples. PantryScout will use your list to rank recipes and calculate what you need to shop for.</Text></View>
     </>;
   }
@@ -311,12 +340,12 @@ export default function App() {
       })}</View>
       <Button label="Build shopping list from plan" onPress={() => {
         const planned = Object.values(plan).map((rid) => recipes.find((r) => r.id === rid)).filter((r): r is Recipe => Boolean(r));
-        const missing = planned.flatMap((r) => r.ingredients.filter((ingredient) => !pantry.some((item) => normalized(ingredient).includes(normalized(item.name)))));
+        const missing = planned.flatMap((r) => r.ingredients.filter((ingredient) => !hasPantryIngredient(ingredient, pantry)));
         setShopping((items) => {
-          const current = new Set(items.map((x) => normalized(x.name)));
+          const current = new Set(items.map((x) => ingredientKey(x.name)));
           const additions: string[] = [];
           for (const name of missing) {
-            const key = normalized(name);
+            const key = ingredientKey(name);
             if (!current.has(key)) { current.add(key); additions.push(name); }
           }
           return [...items, ...additions.map((name) => ({ id: id(), name, checked: false }))];
@@ -345,6 +374,7 @@ export default function App() {
       <Text style={styles.modalEyebrow}>YOUR KITCHEN</Text><Text style={styles.modalTitle}>Add an item</Text><Text style={styles.modalCopy}>Keep the pantry list quick and easy to update.</Text>
       <TextInput value={pantryName} onChangeText={setPantryName} placeholder="Ingredient (e.g. brown rice)" placeholderTextColor={COLORS.muted} style={styles.input} autoFocus />
       <TextInput value={pantryQuantity} onChangeText={setPantryQuantity} placeholder="Amount (optional)" placeholderTextColor={COLORS.muted} style={styles.input} />
+      <TextInput value={pantryExpiry} onChangeText={setPantryExpiry} placeholder="Use-by date (YYYY-MM-DD, optional)" placeholderTextColor={COLORS.muted} style={styles.input} autoCapitalize="none" />
       <Button label="Add to pantry" onPress={addPantryItem} />
     </>;
     if (modal === 'shop-add') return <>
