@@ -4,10 +4,13 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useShareIntent } from 'expo-share-intent';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchRecipePage } from './recipe-import';
+import { searchOnlineMeals, type OnlineMeal } from './online-recipes';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   BackHandler,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -17,6 +20,7 @@ import {
   TextInput,
   ToastAndroid,
   type ScrollViewInstance,
+  useColorScheme,
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,12 +36,15 @@ type Recipe = {
   steps: string[];
   tags: string[];
   source?: string;
+  imageUrl?: string;
+  sourceName?: string;
   status?: 'ready' | 'review';
   saved?: boolean;
 };
 type PantryItem = { id: string; name: string; quantity: string; expires?: string };
 type ShopItem = { id: string; name: string; checked: boolean };
-type ModalKind = 'import' | 'create' | 'edit' | 'pantry' | 'shop-add' | 'recipe' | 'cook' | 'picker' | null;
+type ThemeMode = 'system' | 'light' | 'dark';
+type ModalKind = 'import' | 'create' | 'edit' | 'pantry' | 'shop-add' | 'recipe' | 'online-preview' | 'settings' | 'cook' | 'picker' | null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -59,6 +66,8 @@ function isRecipe(value: unknown): value is Recipe {
     && Array.isArray(value.steps) && value.steps.every((item) => typeof item === 'string')
     && Array.isArray(value.tags) && value.tags.every((item) => typeof item === 'string')
     && (value.source === undefined || typeof value.source === 'string')
+    && (value.imageUrl === undefined || typeof value.imageUrl === 'string')
+    && (value.sourceName === undefined || typeof value.sourceName === 'string')
     && (value.status === undefined || value.status === 'ready' || value.status === 'review')
     && (value.saved === undefined || typeof value.saved === 'boolean');
 }
@@ -101,10 +110,15 @@ const SEED_RECIPES: Recipe[] = [
   },
 ];
 
-const COLORS = {
+const LIGHT_COLORS = {
   ink: '#24332C', muted: '#718078', green: '#376B50', greenSoft: '#E6EFE6', cream: '#F7F5EF', white: '#FFFFFF',
-  line: '#E8E7DF', orange: '#E88958', orangeSoft: '#FBE8DC', yellow: '#F1C86A', card: '#FFFFFF', pale: '#EEF1E9',
+  line: '#E8E7DF', orange: '#E88958', orangeSoft: '#FBE8DC', yellow: '#F1C86A', card: '#FFFFFF', pale: '#EEF1E9', warning: '#FFF1D9', warningText: '#7B5D27', buttonText: '#FFFFFF',
 };
+const DARK_COLORS: typeof LIGHT_COLORS = {
+  ink: '#F2F5F0', muted: '#A5B0A8', green: '#79B28A', greenSoft: '#263B2D', cream: '#111713', white: '#1A221D',
+  line: '#303B33', orange: '#F09A6B', orangeSoft: '#422C22', yellow: '#E9C767', card: '#1A221D', pale: '#242F28', warning: '#3A3323', warningText: '#E6CB83', buttonText: '#101713',
+};
+type Palette = typeof LIGHT_COLORS;
 
 function id() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 function normalized(value: string) { return value.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim(); }
@@ -174,6 +188,7 @@ function parseImportedText(raw: string, source: string): Recipe {
 function PantryScoutApp() {
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({ scheme: 'pantryscout' });
   const insets = useSafeAreaInsets();
+  const systemScheme = useColorScheme();
   const mainScroll = useRef<ScrollViewInstance | null>(null);
   const [tab, setTab] = useState<Tab>('Today');
   const [modal, setModal] = useState<ModalKind>(null);
@@ -183,8 +198,15 @@ function PantryScoutApp() {
   const [shopping, setShopping] = useState<ShopItem[]>([]);
   const [plan, setPlan] = useState<Record<string, string>>({ Mon: 'r1', Tue: 'r2', Wed: 'r3' });
   const [queue, setQueue] = useState<string[]>([]);
+  const [themeMode, setThemeMode] = useState<ThemeMode>('system');
   const [ready, setReady] = useState(false);
   const [search, setSearch] = useState('');
+  const [recipeView, setRecipeView] = useState<'saved' | 'online'>('saved');
+  const [onlineQuery, setOnlineQuery] = useState('');
+  const [onlineResults, setOnlineResults] = useState<OnlineMeal[]>([]);
+  const [onlineLoading, setOnlineLoading] = useState(false);
+  const [onlineError, setOnlineError] = useState('');
+  const [selectedOnlineMeal, setSelectedOnlineMeal] = useState<OnlineMeal | null>(null);
   const [pantryName, setPantryName] = useState('');
   const [pantryQuantity, setPantryQuantity] = useState('1');
   const [pantryExpiry, setPantryExpiry] = useState('');
@@ -202,6 +224,9 @@ function PantryScoutApp() {
   const [pickerDay, setPickerDay] = useState('Mon');
   const [recipeFilter, setRecipeFilter] = useState<'all' | 'saved' | 'pantry'>('all');
   const lastBackPress = useRef(0);
+  const isDark = themeMode === 'dark' || (themeMode === 'system' && systemScheme === 'dark');
+  const COLORS = isDark ? DARK_COLORS : LIGHT_COLORS;
+  const styles = useMemo(() => createStyles(COLORS), [isDark]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return undefined;
@@ -244,6 +269,7 @@ function PantryScoutApp() {
           if (Array.isArray(data.recipes)) setRecipes(data.recipes.filter(isRecipe));
           if (Array.isArray(data.shopping)) setShopping(data.shopping.filter(isShopItem));
           if (Array.isArray(data.queue)) setQueue(data.queue.filter((value): value is string => typeof value === 'string'));
+          if (data.themeMode === 'light' || data.themeMode === 'dark' || data.themeMode === 'system') setThemeMode(data.themeMode);
           if (isRecord(data.plan)) {
             setPlan(Object.fromEntries(Object.entries(data.plan).filter((entry): entry is [string, string] => DAYS.includes(entry[0]) && typeof entry[1] === 'string')));
           }
@@ -260,6 +286,7 @@ function PantryScoutApp() {
     setImportUrl(url);
     setImportText(textWithoutUrl);
     setImportError('');
+    setRecipeView('saved');
     setTab('Recipes');
     setModal('import');
     resetShareIntent();
@@ -267,8 +294,8 @@ function PantryScoutApp() {
 
   useEffect(() => {
     if (!ready) return;
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ pantry, recipes, shopping, plan, queue })).catch(() => {});
-  }, [ready, pantry, recipes, shopping, plan, queue]);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ pantry, recipes, shopping, plan, queue, themeMode })).catch(() => {});
+  }, [ready, pantry, recipes, shopping, plan, queue, themeMode]);
 
   const matches = useMemo(() => recipes
     .map((recipe) => ({ recipe, count: recipeMatch(recipe, pantry), useSoon: recipe.ingredients.filter((ingredient) => pantry.some((item) => isUseSoon(item.expires) && hasPantryIngredient(ingredient, [item]))).length }))
@@ -283,12 +310,45 @@ function PantryScoutApp() {
 
   if (!ready) {
     return <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
+      <StatusBar style={isDark ? 'light' : 'dark'} />
       <View style={styles.loading}><ActivityIndicator color={COLORS.green} /><Text style={styles.loadingText}>Loading your kitchen…</Text></View>
     </SafeAreaView>;
   }
 
   function openRecipe(recipe: Recipe) { setSelectedRecipe(recipe); setModal('recipe'); }
+  function toSavedOnlineRecipe(meal: OnlineMeal): Recipe {
+    return {
+      id: `mealdb-${meal.id}`, title: meal.title,
+      description: [meal.cuisine, meal.category].filter(Boolean).join(' · ') || 'Recipe found online.',
+      minutes: 0, servings: 0, ingredients: meal.ingredients, steps: meal.steps,
+      tags: ['Online recipe', ...(meal.category ? [meal.category] : []), ...(meal.cuisine ? [meal.cuisine] : [])],
+      source: meal.sourceUrl, sourceName: 'TheMealDB', imageUrl: meal.imageUrl,
+      status: meal.ingredients.length && meal.steps.length ? 'ready' : 'review', saved: true,
+    };
+  }
+  function openOnlineMeal(meal: OnlineMeal) { setSelectedOnlineMeal(meal); setModal('online-preview'); }
+  function saveOnlineMeal(meal: OnlineMeal) {
+    const recipe = toSavedOnlineRecipe(meal);
+    setRecipes((items) => items.some((item) => item.id === recipe.id) ? items : [recipe, ...items]);
+    setSelectedRecipe(recipe);
+    setSelectedOnlineMeal(null);
+    setModal('recipe');
+  }
+  async function runOnlineSearch(query = onlineQuery, byIngredient = false) {
+    const term = query.trim();
+    if (!term || onlineLoading) return;
+    setOnlineQuery(term);
+    setOnlineLoading(true);
+    setOnlineError('');
+    setOnlineResults([]);
+    try {
+      setOnlineResults(await searchOnlineMeals(term, byIngredient));
+    } catch (error) {
+      setOnlineError(error instanceof Error ? error.message : 'Online recipe search failed. Please try again.');
+    } finally {
+      setOnlineLoading(false);
+    }
+  }
   function addPantryItem() {
     if (!pantryName.trim()) return;
     setPantry((items) => [...items, { id: id(), name: pantryName.trim(), quantity: pantryQuantity.trim() || '1', expires: pantryExpiry.trim() || undefined }]);
@@ -315,7 +375,7 @@ function PantryScoutApp() {
       minutes: 20, servings: 2, ingredients: [...names, 'Oil, salt and pepper if available'], steps,
       tags: ['Pantry creation', 'Use what you have'], status: 'ready', saved: true,
     };
-    setRecipes((items) => [item, ...items]); setSelectedRecipe(item); setTab('Recipes'); setModal('recipe');
+    setRecipes((items) => [item, ...items]); setSelectedRecipe(item); setRecipeView('saved'); setTab('Recipes'); setModal('recipe');
   }
   function createRecipe() {
     if (!newTitle.trim()) return;
@@ -326,7 +386,7 @@ function PantryScoutApp() {
       ingredients, steps, tags: ['My recipes'],
       status: ingredients.length && steps.length ? 'ready' : 'review', saved: true,
     };
-    setRecipes((items) => [item, ...items]); setNewTitle(''); setNewIngredients(''); setNewSteps(''); setModal(null); setTab('Recipes');
+    setRecipes((items) => [item, ...items]); setNewTitle(''); setNewIngredients(''); setNewSteps(''); setRecipeView('saved'); setModal(null); setTab('Recipes');
   }
   function beginEditRecipe(recipe: Recipe) {
     setEditingId(recipe.id); setNewTitle(recipe.title); setNewIngredients(recipe.ingredients.join('\n')); setNewSteps(recipe.steps.join('\n')); setModal('edit');
@@ -369,7 +429,7 @@ function PantryScoutApp() {
       importMessage = 'This site does not expose a readable recipe. The link was saved so you can complete it.';
       item.description = importMessage;
     }
-    setRecipes((items) => [item, ...items]); setImportUrl(''); setImportText(''); setImportError(''); setModal(null); setTab('Recipes');
+    setRecipes((items) => [item, ...items]); setImportUrl(''); setImportText(''); setImportError(''); setRecipeView('saved'); setModal(null); setTab('Recipes');
     setSelectedRecipe(item); setModal('recipe');
     } catch (error) {
       setImportError(error instanceof Error ? error.message : 'The recipe could not be imported. Please try again.');
@@ -411,7 +471,7 @@ function PantryScoutApp() {
     const count = recipeMatch(recipe, pantry);
     return (
       <Pressable onPress={() => openRecipe(recipe)} style={[styles.recipeCard, compact && styles.recipeCardCompact]}>
-        <View style={styles.recipeImage}><Text style={styles.recipeEmoji}>{recipe.title.toLowerCase().includes('egg') ? '🍳' : recipe.title.toLowerCase().includes('pasta') ? '🍝' : recipe.title.toLowerCase().includes('rice') ? '🥣' : '🍲'}</Text><Pressable accessibilityRole="button" accessibilityLabel={recipe.saved ? `Remove ${recipe.title} from saved recipes` : `Save ${recipe.title}`} accessibilityState={{ selected: Boolean(recipe.saved) }} onPress={(event) => { event.stopPropagation(); toggleSaved(recipe.id); }} style={styles.heart}><Text style={{ fontSize: 17 }}>{recipe.saved ? '♥' : '♡'}</Text></Pressable></View>
+        <View style={styles.recipeImage}>{recipe.imageUrl ? <Image source={{ uri: recipe.imageUrl }} style={styles.recipePhoto} resizeMode="cover" /> : <Text style={styles.recipeEmoji}>{recipe.title.toLowerCase().includes('egg') ? '🍳' : recipe.title.toLowerCase().includes('pasta') ? '🍝' : recipe.title.toLowerCase().includes('rice') ? '🥣' : '🍲'}</Text>}<Pressable accessibilityRole="button" accessibilityLabel={recipe.saved ? `Remove ${recipe.title} from saved recipes` : `Save ${recipe.title}`} accessibilityState={{ selected: Boolean(recipe.saved) }} onPress={(event) => { event.stopPropagation(); toggleSaved(recipe.id); }} style={styles.heart}><Text style={{ fontSize: 17 }}>{recipe.saved ? '♥' : '♡'}</Text></Pressable></View>
         <View style={styles.recipeInfo}><Text style={styles.recipeTitle}>{recipe.title}</Text><Text style={styles.recipeSub}>{recipe.minutes} min  ·  {recipe.servings} servings  ·  {count}/{recipe.ingredients.length} ingredients here</Text>
           <View style={styles.tagRow}>{recipe.tags.slice(0, 2).map((tag) => <Pill key={tag}>{tag}</Pill>)}</View>
           {recipe.status === 'review' ? <Text style={styles.reviewNote}>Needs a quick review</Text> : null}
@@ -424,9 +484,9 @@ function PantryScoutApp() {
     const top = matches.slice(0, 3);
     const useSoon = pantry.filter((item) => isUseSoon(item.expires));
     return <>
-      <View style={styles.hero}><View style={styles.heroTop}><View><Text style={styles.eyebrow}>YOUR KITCHEN, FIGURED OUT</Text><Text style={styles.heroTitle}>What sounds{ '\n' }good today?</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>A</Text></View></View>
-        <Text style={styles.heroCopy}>PantryScout brings your recipes, pantry and weekly meals together.</Text>
-        <View style={styles.heroActions}><Button label="＋ Import recipe" onPress={() => setModal('import')} compact /><Button label="Create recipe" onPress={() => setModal('create')} secondary compact /><Button label="✦ Create from pantry" onPress={createFromPantry} secondary compact /></View>
+      <View style={styles.hero}><View style={styles.heroTop}><View><Text style={styles.eyebrow}>YOUR KITCHEN, FIGURED OUT</Text><Text style={styles.heroTitle}>Dinner, from{ '\n' }what you have.</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>✳</Text></View></View>
+        <Text style={styles.heroCopy}>Use what’s in your pantry, find something new, and make tonight easier.</Text>
+        <View style={styles.heroActions}><Button label="✦  Make something from my pantry" onPress={createFromPantry} compact /><Pressable accessibilityRole="button" onPress={() => { setRecipeView('online'); setTab('Recipes'); }} style={styles.heroOnlineLink}><Text style={styles.link}>Search online recipes  →</Text></Pressable></View>
       </View>
       <View style={styles.pantryPeek}><View><Text style={styles.pantryPeekTitle}>Your pantry</Text><Text style={styles.pantryPeekCopy}>{pantry.length} ingredients · {useSoon.length ? `${useSoon.length} to use soon` : 'looking good'}</Text></View><Pressable onPress={() => setTab('Pantry')}><Text style={styles.link}>Open pantry →</Text></Pressable></View>
       {useSoon.length > 0 && <View style={styles.useSoon}><Text style={styles.useSoonIcon}>⏳</Text><Text style={styles.useSoonText}>Use soon: {useSoon.map((item) => item.name.toLowerCase()).join(', ')}</Text></View>}
@@ -438,7 +498,29 @@ function PantryScoutApp() {
   }
   function renderRecipes() {
     return <>
-      <View style={styles.pageIntro}><Text style={styles.eyebrow}>YOUR COOKBOOK</Text><Text style={styles.pageTitle}>Recipes</Text><Text style={styles.pageCopy}>Saved from anywhere, created by you, ready when you need them.</Text></View>
+      <View style={styles.pageIntro}><Text style={styles.eyebrow}>{recipeView === 'online' ? 'FIND SOMETHING NEW' : 'YOUR COOKBOOK'}</Text><Text style={styles.pageTitle}>{recipeView === 'online' ? 'Online ideas' : 'Recipes'}</Text><Text style={styles.pageCopy}>{recipeView === 'online' ? 'Search a large recipe collection, check what matches your pantry, and save the ones you like.' : 'Saved from anywhere, created by you, ready when you need them.'}</Text></View>
+      <View style={styles.filterLine}>
+        {(['saved', 'online'] as const).map((view) => <Pressable key={view} accessibilityRole="tab" accessibilityState={{ selected: recipeView === view }} onPress={() => setRecipeView(view)}><Pill color={recipeView === view ? COLORS.greenSoft : COLORS.pale}>{view === 'saved' ? 'My recipes' : 'Online ideas'}</Pill></Pressable>)}
+      </View>
+      {recipeView === 'online' ? <>
+        <View style={styles.onlineSearchRow}><View style={[styles.searchBox, styles.onlineSearchBox]}><Text style={styles.searchIcon}>⌕</Text><TextInput value={onlineQuery} onChangeText={setOnlineQuery} onSubmitEditing={() => runOnlineSearch()} returnKeyType="search" placeholder="Dish, ingredient, or cuisine" placeholderTextColor={COLORS.muted} style={styles.searchInput} /></View><Button label="Search" onPress={() => runOnlineSearch()} disabled={!onlineQuery.trim() || onlineLoading} compact /></View>
+        <Text style={styles.sectionHint}>Or search using an ingredient you already have:</Text>
+        <View style={styles.filterLine}>{pantry.slice(0, 6).map((item) => <Pressable key={item.id} disabled={onlineLoading} onPress={() => runOnlineSearch(item.name, true)}><Pill color={COLORS.greenSoft}>{item.name}</Pill></Pressable>)}</View>
+        {onlineLoading ? <View style={styles.searchLoading}><ActivityIndicator color={COLORS.green} /><Text style={styles.sectionHint}>Finding recipes…</Text></View> : null}
+        {onlineError ? <View style={styles.reviewBox}><Text style={styles.reviewBoxText}>{onlineError}</Text></View> : null}
+        {!onlineLoading && !onlineError && onlineResults.length === 0 ? <View style={styles.emptyCard}><Text style={styles.emptyEmoji}>🌐</Text><Text style={styles.emptyTitle}>What are you in the mood for?</Text><Text style={styles.emptyText}>Search by dish, ingredient, or cuisine. Tap a pantry ingredient to find recipes that use it.</Text></View> : null}
+        {onlineResults.map((meal) => {
+          const recipe = toSavedOnlineRecipe(meal);
+          const count = recipeMatch(recipe, pantry);
+          const alreadySaved = recipes.some((item) => item.id === recipe.id);
+          const openResult = () => alreadySaved ? openRecipe(recipe) : openOnlineMeal(meal);
+          return <Pressable key={meal.id} onPress={openResult} style={styles.onlineResultCard}>
+            {meal.imageUrl ? <Image source={{ uri: meal.imageUrl }} style={styles.onlineResultImage} resizeMode="cover" /> : <View style={[styles.onlineResultImage, styles.onlineImageFallback]}><Text style={styles.recipeEmoji}>🍽️</Text></View>}
+            <View style={styles.onlineResultInfo}><Text style={styles.recipeTitle}>{meal.title}</Text><Text style={styles.recipeSub}>{[meal.cuisine, meal.category].filter(Boolean).join(' · ') || 'Recipe'} · {count}/{recipe.ingredients.length} pantry items</Text><Button label={alreadySaved ? 'Saved · view recipe' : 'Preview recipe'} onPress={openResult} secondary compact /></View>
+          </Pressable>;
+        })}
+        {onlineResults.length > 0 ? <Text style={styles.attribution}>Recipe data and photos provided by TheMealDB.</Text> : null}
+      </> : <>
       <View style={styles.searchBox}><Text style={styles.searchIcon}>⌕</Text><TextInput value={search} onChangeText={setSearch} placeholder="Search recipes or tags" placeholderTextColor={COLORS.muted} style={styles.searchInput} /></View>
       <View style={styles.inlineActions}><Button label="＋ Import" onPress={() => setModal('import')} compact /><Button label="＋ Create" onPress={() => setModal('create')} secondary compact /></View>
       <View style={styles.filterLine}>
@@ -450,6 +532,7 @@ function PantryScoutApp() {
       </View>
       {visibleRecipes.map((recipe) => <RecipeCard key={recipe.id} recipe={recipe} />)}
       {visibleRecipes.length === 0 && <Text style={styles.emptyText}>No recipes match that search. Try another ingredient or title.</Text>}
+      </>}
     </>;
   }
   function renderPantry() {
@@ -509,6 +592,22 @@ function PantryScoutApp() {
   }
 
   function renderModalContent() {
+    if (modal === 'settings') return <>
+      <Text style={styles.modalEyebrow}>PERSONALISE PANTRYSCOUT</Text><Text style={styles.modalTitle}>Appearance</Text><Text style={styles.modalCopy}>Choose how PantryScout looks. System follows your device setting.</Text>
+      <View style={styles.themeOptions}>{(['light', 'dark', 'system'] as const).map((mode) => <Pressable key={mode} accessibilityRole="radio" accessibilityState={{ checked: themeMode === mode }} onPress={() => setThemeMode(mode)} style={[styles.themeOption, themeMode === mode && styles.themeOptionSelected]}><View style={styles.themeOptionCopy}><Text style={styles.themeOptionTitle}>{mode === 'light' ? 'Light' : mode === 'dark' ? 'Dark' : 'System'}</Text><Text style={styles.themeOptionDescription}>{mode === 'system' ? 'Match your device appearance' : `${mode[0].toUpperCase()}${mode.slice(1)} colours, always`}</Text></View><View style={[styles.radioOuter, themeMode === mode && styles.radioOuterSelected]}>{themeMode === mode ? <View style={styles.radioInner} /> : null}</View></Pressable>)}</View>
+    </>;
+    if (modal === 'online-preview' && selectedOnlineMeal) {
+      const recipe = toSavedOnlineRecipe(selectedOnlineMeal);
+      return <>
+        {selectedOnlineMeal.imageUrl ? <Image source={{ uri: selectedOnlineMeal.imageUrl }} style={styles.previewImage} resizeMode="cover" /> : null}
+        <Text style={styles.modalEyebrow}>ONLINE RECIPE · {selectedOnlineMeal.cuisine || 'DISCOVER'}</Text><Text style={styles.modalTitle}>{selectedOnlineMeal.title}</Text><Text style={styles.modalCopy}>{[selectedOnlineMeal.category, `${recipeMatch(recipe, pantry)} of ${selectedOnlineMeal.ingredients.length} ingredients in your pantry`].filter(Boolean).join(' · ')}</Text>
+        <SectionTitle title="Ingredients" />
+        {selectedOnlineMeal.ingredients.length ? selectedOnlineMeal.ingredients.map((ingredient, index) => <Text key={`${ingredient}-${index}`} style={styles.detailLine}>•  {ingredient}</Text>) : <Text style={styles.emptyText}>Ingredients aren’t available from this listing.</Text>}
+        {selectedOnlineMeal.steps.length ? <><SectionTitle title="Method" />{selectedOnlineMeal.steps.map((step, index) => <Text key={`${index}-${step.slice(0, 16)}`} style={styles.detailStep}><Text style={styles.stepNumber}>{index + 1}. </Text>{step}</Text>)}</> : null}
+        <Text style={styles.sourceLine}>Recipe source: TheMealDB · open the original page to verify details.</Text>
+        <View style={styles.modalButtonStack}><Button label="Save to my recipes" onPress={() => saveOnlineMeal(selectedOnlineMeal)} /><Button label="Open original recipe" onPress={() => { Linking.openURL(selectedOnlineMeal.sourceUrl).catch(() => {}); }} secondary /></View>
+      </>;
+    }
     if (modal === 'pantry') return <>
       <Text style={styles.modalEyebrow}>YOUR KITCHEN</Text><Text style={styles.modalTitle}>Add an item</Text><Text style={styles.modalCopy}>Keep the pantry list quick and easy to update.</Text>
       <TextInput value={pantryName} onChangeText={setPantryName} placeholder="Ingredient (e.g. brown rice)" placeholderTextColor={COLORS.muted} style={styles.input} autoFocus />
@@ -544,9 +643,10 @@ function PantryScoutApp() {
       <Button label={importing ? 'Reading recipe…' : 'Import recipe'} onPress={importRecipe} disabled={importing} />
     </>;
     if (modal === 'recipe' && selectedRecipe) return <>
+      {selectedRecipe.imageUrl ? <Image source={{ uri: selectedRecipe.imageUrl }} style={styles.previewImage} resizeMode="cover" /> : null}
       <Text style={styles.modalEyebrow}>{selectedRecipe.tags.join(' · ')}</Text><Text style={styles.modalTitle}>{selectedRecipe.title}</Text><Text style={styles.modalCopy}>{selectedRecipe.description}</Text>
-      <View style={styles.detailStats}><Pill color={COLORS.orangeSoft}>{selectedRecipe.minutes} minutes</Pill><Pill>{selectedRecipe.servings} servings</Pill><Pill color={COLORS.greenSoft}>{recipeMatch(selectedRecipe, pantry)} ingredients in pantry</Pill></View>
-      {selectedRecipe.source ? <Text style={styles.sourceLine}>Source saved: {selectedRecipe.source}</Text> : null}
+      <View style={styles.detailStats}>{selectedRecipe.minutes > 0 ? <Pill color={COLORS.orangeSoft}>{selectedRecipe.minutes} minutes</Pill> : null}{selectedRecipe.servings > 0 ? <Pill>{selectedRecipe.servings} servings</Pill> : null}<Pill color={COLORS.greenSoft}>{recipeMatch(selectedRecipe, pantry)} ingredients in pantry</Pill></View>
+      {selectedRecipe.source ? <Pressable onPress={() => { Linking.openURL(selectedRecipe.source as string).catch(() => {}); }}><Text style={styles.sourceLine}>Source: {selectedRecipe.sourceName || selectedRecipe.source} ↗</Text></Pressable> : null}
       {selectedRecipe.status === 'review' ? <Text style={styles.reviewBox}>This recipe needs a quick review before cooking.</Text> : null}
       <SectionTitle title="Ingredients" />
       {selectedRecipe.ingredients.length ? selectedRecipe.ingredients.map((ingredient, index) => <Text key={`${ingredient}-${index}`} style={styles.detailLine}>•  {ingredient}</Text>) : <Text style={styles.emptyText}>No ingredients detected yet.</Text>}
@@ -573,8 +673,8 @@ function PantryScoutApp() {
   ];
   return (
     <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
-      <View style={styles.topBar}><View style={styles.brandMark}><Text style={styles.brandIcon}>✳</Text></View><View style={styles.brandCopy}><Text style={styles.brandName}>PantryScout</Text><Text style={styles.brandLine}>A little help with dinner</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Import a recipe" style={styles.topAction} onPress={() => setModal('import')}><Text style={styles.topActionText}>＋</Text></Pressable></View>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <View style={styles.topBar}><View style={styles.brandMark}><Text style={styles.brandIcon}>✳</Text></View><View style={styles.brandCopy}><Text style={styles.brandName}>PantryScout</Text><Text style={styles.brandLine}>A little help with dinner</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Appearance settings" style={styles.topAction} onPress={() => setModal('settings')}><Text style={styles.themeActionText}>◐</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Import a recipe" style={styles.topAction} onPress={() => setModal('import')}><Text style={styles.topActionText}>＋</Text></Pressable></View>
       <ScrollView ref={mainScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {tab === 'Today' ? renderToday() : tab === 'Recipes' ? renderRecipes() : tab === 'Pantry' ? renderPantry() : tab === 'Plan' ? renderPlan() : renderShop()}
         <View style={{ height: 22 }} />
@@ -593,26 +693,30 @@ export default function App() {
   return <SafeAreaProvider><PantryScoutApp /></SafeAreaProvider>;
 }
 
-const styles = StyleSheet.create({
+function createStyles(COLORS: Palette) {
+  return StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.cream },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 }, loadingText: { color: COLORS.muted, fontSize: 13 },
   topBar: { height: 72, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: COLORS.line, backgroundColor: COLORS.cream },
-  brandMark: { width: 42, height: 42, borderRadius: 14, backgroundColor: COLORS.green, alignItems: 'center', justifyContent: 'center' }, brandIcon: { color: '#FFFDF6', fontSize: 24, fontWeight: '700' },
+  brandMark: { width: 42, height: 42, borderRadius: 14, backgroundColor: COLORS.green, alignItems: 'center', justifyContent: 'center' }, brandIcon: { color: COLORS.buttonText, fontSize: 24, fontWeight: '700' },
   brandCopy: { marginLeft: 10, flex: 1 }, brandName: { fontSize: 17, color: COLORS.ink, fontWeight: '800', letterSpacing: -0.35 }, brandLine: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
-  topAction: { width: 42, height: 42, borderRadius: 21, backgroundColor: COLORS.white, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.line }, topActionText: { fontSize: 24, color: COLORS.green, lineHeight: 28 },
+  topAction: { width: 42, height: 42, borderRadius: 21, backgroundColor: COLORS.white, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.line, marginLeft: 7 }, topActionText: { fontSize: 24, color: COLORS.green, lineHeight: 28 }, themeActionText: { fontSize: 21, color: COLORS.green, lineHeight: 25 },
   content: { padding: 18, paddingBottom: 16, maxWidth: 700, width: '100%', alignSelf: 'center' },
-  hero: { backgroundColor: '#E7EFE4', padding: 20, borderRadius: 24, marginBottom: 14, overflow: 'hidden' }, heroTop: { flexDirection: 'row', justifyContent: 'space-between' }, eyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 1.4 }, heroTitle: { fontSize: 30, lineHeight: 34, color: COLORS.ink, fontWeight: '800', letterSpacing: -0.9, marginTop: 8 }, avatar: { height: 38, width: 38, borderRadius: 19, backgroundColor: '#F2D598', alignItems: 'center', justifyContent: 'center' }, avatarText: { color: COLORS.ink, fontWeight: '800' }, heroCopy: { color: '#58675E', fontSize: 13, lineHeight: 19, marginTop: 11, maxWidth: 280 }, heroActions: { flexDirection: 'row', marginTop: 16, gap: 8, flexWrap: 'wrap' },
-  button: { backgroundColor: COLORS.green, borderRadius: 14, paddingHorizontal: 16, minHeight: 48, justifyContent: 'center', alignItems: 'center', marginVertical: 4 }, buttonSecondary: { backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line }, buttonCompact: { minHeight: 40, borderRadius: 12, paddingHorizontal: 13 }, buttonText: { color: COLORS.white, fontSize: 14, fontWeight: '700' }, buttonTextSecondary: { color: COLORS.green }, buttonTextCompact: { fontSize: 12 },
+  hero: { backgroundColor: COLORS.greenSoft, padding: 20, borderRadius: 24, marginBottom: 14, overflow: 'hidden' }, heroTop: { flexDirection: 'row', justifyContent: 'space-between' }, eyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 1.4 }, heroTitle: { fontFamily: 'serif', fontSize: 31, lineHeight: 36, color: COLORS.ink, fontWeight: '700', letterSpacing: -0.7, marginTop: 8 }, avatar: { height: 38, width: 38, borderRadius: 19, backgroundColor: '#F2D598', alignItems: 'center', justifyContent: 'center' }, avatarText: { color: COLORS.ink, fontWeight: '800' }, heroCopy: { color: COLORS.muted, fontSize: 13, lineHeight: 19, marginTop: 11, maxWidth: 280 }, heroActions: { flexDirection: 'row', marginTop: 16, gap: 8, flexWrap: 'wrap', alignItems: 'center' }, heroOnlineLink: { paddingHorizontal: 7, paddingVertical: 10 },
+  button: { backgroundColor: COLORS.green, borderRadius: 14, paddingHorizontal: 16, minHeight: 48, justifyContent: 'center', alignItems: 'center', marginVertical: 4 }, buttonSecondary: { backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line }, buttonCompact: { minHeight: 40, borderRadius: 12, paddingHorizontal: 13 }, buttonText: { color: COLORS.buttonText, fontSize: 14, fontWeight: '700' }, buttonTextSecondary: { color: COLORS.green }, buttonTextCompact: { fontSize: 12 },
   pantryPeek: { borderRadius: 18, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, padding: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }, pantryPeekTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, pantryPeekCopy: { color: COLORS.muted, fontSize: 12, marginTop: 4 }, link: { color: COLORS.green, fontWeight: '700', fontSize: 12 },
-  useSoon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF1D9', borderRadius: 13, padding: 11, marginBottom: 20 }, useSoonIcon: { fontSize: 16, marginRight: 8 }, useSoonText: { color: '#7B5D27', fontSize: 12, fontWeight: '600', flex: 1 },
+  useSoon: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.warning, borderRadius: 13, padding: 11, marginBottom: 20 }, useSoonIcon: { fontSize: 16, marginRight: 8 }, useSoonText: { color: COLORS.warningText, fontSize: 12, fontWeight: '600', flex: 1 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, marginBottom: 8 }, sectionTitle: { fontSize: 18, fontWeight: '800', color: COLORS.ink, letterSpacing: -0.3 }, sectionHint: { fontSize: 12, lineHeight: 17, color: COLORS.muted, marginBottom: 10 },
-  recipeCard: { borderRadius: 19, overflow: 'hidden', backgroundColor: COLORS.card, marginBottom: 12, borderWidth: 1, borderColor: COLORS.line }, recipeCardCompact: { marginBottom: 8 }, recipeImage: { height: 120, backgroundColor: '#EEE7D9', alignItems: 'center', justifyContent: 'center' }, recipeEmoji: { fontSize: 51 }, heart: { position: 'absolute', right: 11, top: 11, backgroundColor: '#FFFFFFE8', height: 34, width: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center' }, recipeInfo: { paddingHorizontal: 14, paddingVertical: 12 }, recipeTitle: { color: COLORS.ink, fontSize: 16, fontWeight: '800' }, recipeSub: { fontSize: 11, color: COLORS.muted, marginTop: 5 }, tagRow: { flexDirection: 'row', gap: 6, marginTop: 9 }, pill: { backgroundColor: COLORS.pale, borderRadius: 9, paddingHorizontal: 8, paddingVertical: 5, alignSelf: 'flex-start' }, pillText: { color: COLORS.green, fontSize: 10, fontWeight: '700' }, reviewNote: { color: '#9A5B2C', marginTop: 8, fontSize: 11, fontWeight: '700' },
-  featureCard: { backgroundColor: '#F0E9DA', borderRadius: 21, padding: 18, marginTop: 8 }, featureKicker: { color: '#8D6F3F', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, featureTitle: { fontSize: 20, lineHeight: 25, fontWeight: '800', color: COLORS.ink, marginTop: 7 }, featureCopy: { fontSize: 12, lineHeight: 18, color: '#6F6A5E', marginVertical: 8 },
-  pageIntro: { marginTop: 10, marginBottom: 16 }, pageTitle: { fontSize: 31, fontWeight: '800', color: COLORS.ink, letterSpacing: -0.9, marginTop: 5 }, pageCopy: { fontSize: 13, lineHeight: 19, color: COLORS.muted, marginTop: 6 }, searchBox: { height: 47, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 12 }, searchIcon: { color: COLORS.muted, fontSize: 24, marginRight: 7 }, searchInput: { flex: 1, paddingVertical: 0, color: COLORS.ink, fontSize: 13 }, inlineActions: { flexDirection: 'row', gap: 8 }, filterLine: { flexDirection: 'row', gap: 7, marginVertical: 8, flexWrap: 'wrap' }, emptyText: { color: COLORS.muted, fontSize: 13, lineHeight: 20, marginVertical: 8 },
-  inventorySummary: { backgroundColor: COLORS.greenSoft, borderRadius: 19, padding: 17, flexDirection: 'row', alignItems: 'center', marginBottom: 13 }, inventoryCount: { color: COLORS.green, fontSize: 34, fontWeight: '800', marginRight: 12 }, inventoryTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, inventorySub: { color: COLORS.muted, fontSize: 11, marginTop: 3 }, inventoryEmoji: { fontSize: 31, marginLeft: 'auto' }, ingredientRow: { backgroundColor: COLORS.white, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', padding: 12, marginBottom: 8 }, ingredientDot: { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.cream, alignItems: 'center', justifyContent: 'center', marginRight: 10 }, ingredientName: { color: COLORS.ink, fontSize: 14, fontWeight: '700' }, ingredientMeta: { color: COLORS.muted, fontSize: 11, marginTop: 3 }, remove: { color: '#9D6F5B', fontSize: 24, paddingHorizontal: 7 }, tipCard: { borderRadius: 17, backgroundColor: '#EEEDE5', padding: 15, marginTop: 16 }, tipTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, tipCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 6 },
+  recipeCard: { borderRadius: 19, overflow: 'hidden', backgroundColor: COLORS.card, marginBottom: 12, borderWidth: 1, borderColor: COLORS.line }, recipeCardCompact: { marginBottom: 8 }, recipeImage: { height: 120, backgroundColor: COLORS.pale, alignItems: 'center', justifyContent: 'center' }, recipePhoto: { width: '100%', height: '100%' }, recipeEmoji: { fontSize: 51 }, heart: { position: 'absolute', right: 11, top: 11, backgroundColor: COLORS.white, height: 34, width: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center' }, recipeInfo: { paddingHorizontal: 14, paddingVertical: 12 }, recipeTitle: { color: COLORS.ink, fontSize: 16, fontWeight: '800' }, recipeSub: { fontSize: 11, color: COLORS.muted, marginTop: 5 }, tagRow: { flexDirection: 'row', gap: 6, marginTop: 9 }, pill: { backgroundColor: COLORS.pale, borderRadius: 9, paddingHorizontal: 8, paddingVertical: 5, alignSelf: 'flex-start' }, pillText: { color: COLORS.green, fontSize: 10, fontWeight: '700' }, reviewNote: { color: COLORS.orange, marginTop: 8, fontSize: 11, fontWeight: '700' },
+  featureCard: { backgroundColor: COLORS.pale, borderRadius: 21, padding: 18, marginTop: 8 }, featureKicker: { color: COLORS.orange, fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, featureTitle: { fontSize: 20, lineHeight: 25, fontWeight: '800', color: COLORS.ink, marginTop: 7 }, featureCopy: { fontSize: 12, lineHeight: 18, color: COLORS.muted, marginVertical: 8 },
+  pageIntro: { marginTop: 10, marginBottom: 16 }, pageTitle: { fontFamily: 'serif', fontSize: 31, fontWeight: '700', color: COLORS.ink, letterSpacing: -0.7, marginTop: 5 }, pageCopy: { fontSize: 13, lineHeight: 19, color: COLORS.muted, marginTop: 6 }, searchBox: { height: 47, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 12 }, searchIcon: { color: COLORS.muted, fontSize: 24, marginRight: 7 }, searchInput: { flex: 1, paddingVertical: 0, color: COLORS.ink, fontSize: 13 }, inlineActions: { flexDirection: 'row', gap: 8 }, filterLine: { flexDirection: 'row', gap: 7, marginVertical: 8, flexWrap: 'wrap' }, emptyText: { color: COLORS.muted, fontSize: 13, lineHeight: 20, marginVertical: 8 },
+  onlineSearchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, onlineSearchBox: { flex: 1, marginBottom: 0 }, searchLoading: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 18 }, onlineResultCard: { flexDirection: 'row', overflow: 'hidden', minHeight: 132, backgroundColor: COLORS.card, borderRadius: 17, borderWidth: 1, borderColor: COLORS.line, marginBottom: 10 }, onlineResultImage: { width: 118, minHeight: 132, backgroundColor: COLORS.pale }, onlineImageFallback: { alignItems: 'center', justifyContent: 'center' }, onlineResultInfo: { flex: 1, padding: 12, justifyContent: 'center' }, previewImage: { width: '100%', height: 196, borderRadius: 17, backgroundColor: COLORS.pale, marginBottom: 12 }, attribution: { color: COLORS.muted, fontSize: 10, textAlign: 'center', marginVertical: 12 },
+  themeOptions: { gap: 9, marginTop: 7 }, themeOption: { minHeight: 70, backgroundColor: COLORS.white, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, themeOptionSelected: { borderColor: COLORS.green, backgroundColor: COLORS.greenSoft }, themeOptionCopy: { flex: 1 }, themeOptionTitle: { fontSize: 14, fontWeight: '800', color: COLORS.ink }, themeOptionDescription: { color: COLORS.muted, fontSize: 11, marginTop: 4 }, radioOuter: { width: 21, height: 21, borderRadius: 11, borderWidth: 1.5, borderColor: COLORS.muted, alignItems: 'center', justifyContent: 'center', marginLeft: 12 }, radioOuterSelected: { borderColor: COLORS.green }, radioInner: { width: 11, height: 11, borderRadius: 6, backgroundColor: COLORS.green }, reviewBoxText: { color: COLORS.warningText, fontSize: 12, lineHeight: 17 },
+  inventorySummary: { backgroundColor: COLORS.greenSoft, borderRadius: 19, padding: 17, flexDirection: 'row', alignItems: 'center', marginBottom: 13 }, inventoryCount: { color: COLORS.green, fontSize: 34, fontWeight: '800', marginRight: 12 }, inventoryTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, inventorySub: { color: COLORS.muted, fontSize: 11, marginTop: 3 }, inventoryEmoji: { fontSize: 31, marginLeft: 'auto' }, ingredientRow: { backgroundColor: COLORS.white, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', padding: 12, marginBottom: 8 }, ingredientDot: { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.cream, alignItems: 'center', justifyContent: 'center', marginRight: 10 }, ingredientName: { color: COLORS.ink, fontSize: 14, fontWeight: '700' }, ingredientMeta: { color: COLORS.muted, fontSize: 11, marginTop: 3 }, remove: { color: COLORS.orange, fontSize: 24, paddingHorizontal: 7 }, tipCard: { borderRadius: 17, backgroundColor: COLORS.pale, padding: 15, marginTop: 16 }, tipTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, tipCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 6 },
   weekCard: { backgroundColor: COLORS.white, borderRadius: 19, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, marginBottom: 14 }, dayRow: { minHeight: 66, flexDirection: 'row', alignItems: 'center', borderBottomColor: COLORS.line, borderBottomWidth: 1, gap: 11 }, dayBadge: { width: 42, height: 42, borderRadius: 14, backgroundColor: COLORS.greenSoft, alignItems: 'center', justifyContent: 'center' }, dayText: { color: COLORS.green, fontSize: 12, fontWeight: '800' }, dayMeal: { color: COLORS.ink, fontSize: 13, fontWeight: '700' }, dayMeta: { color: COLORS.muted, fontSize: 11, marginTop: 4 }, chevron: { color: COLORS.muted, fontSize: 24, marginHorizontal: 5 },
   queueRow: { flexDirection: 'row', alignItems: 'center', minHeight: 64, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, marginBottom: 8 }, queueRemove: { paddingHorizontal: 6, paddingVertical: 4 }, emptyQueue: { backgroundColor: COLORS.white, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line, padding: 13, marginBottom: 12 },
-  shopActions: { flexDirection: 'row', gap: 8 }, aisleTitle: { fontSize: 13, color: COLORS.green, fontWeight: '800', marginTop: 13, marginBottom: 7 }, shopRow: { minHeight: 54, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, marginBottom: 8 }, cookIngredient: { minHeight: 50, backgroundColor: COLORS.white, borderRadius: 13, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 7 }, checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: '#B5C0B8', marginRight: 11, justifyContent: 'center', alignItems: 'center' }, checkboxChecked: { backgroundColor: COLORS.green, borderColor: COLORS.green }, checkmark: { color: COLORS.white, fontSize: 13, fontWeight: '800' }, shopName: { color: COLORS.ink, fontSize: 13, flex: 1 }, shopDone: { textDecorationLine: 'line-through', color: COLORS.muted }, shopArrow: { fontSize: 20, color: COLORS.muted }, emptyCard: { backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 20, alignItems: 'center', padding: 25, marginTop: 14 }, emptyEmoji: { fontSize: 42 }, emptyTitle: { color: COLORS.ink, fontSize: 17, fontWeight: '800', marginTop: 10, textAlign: 'center' },
-  tabBar: { minHeight: 67, backgroundColor: COLORS.white, borderTopWidth: 1, borderTopColor: COLORS.line, paddingHorizontal: 4, paddingTop: 7, paddingBottom: Platform.OS === 'ios' ? 7 : 5, flexDirection: 'row', justifyContent: 'space-around' }, tabItem: { minWidth: 52, alignItems: 'center', justifyContent: 'center' }, tabEmoji: { fontSize: 17, color: '#98A19B' }, tabEmojiActive: { color: COLORS.green, fontWeight: '800' }, tabLabel: { fontSize: 9, color: '#89938C', marginTop: 3 }, tabLabelActive: { color: COLORS.green, fontWeight: '800' }, tabDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: COLORS.green, position: 'absolute', bottom: -3 },
-  modalBackdrop: { flex: 1, backgroundColor: '#14221BB0', justifyContent: 'flex-end' }, keyboardWrap: { justifyContent: 'flex-end', flex: 1 }, modalSheet: { maxHeight: '92%', backgroundColor: COLORS.cream, borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20, paddingTop: 13 }, modalGrabber: { height: 4, width: 38, borderRadius: 3, backgroundColor: '#CBD1C8', alignSelf: 'center', marginBottom: 15 }, modalClose: { position: 'absolute', top: 10, right: 18, width: 34, height: 34, alignItems: 'center', justifyContent: 'center', zIndex: 2 }, modalCloseText: { color: COLORS.muted, fontSize: 26, lineHeight: 30 }, modalEyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 1.3, marginTop: 8 }, modalTitle: { fontSize: 25, lineHeight: 30, color: COLORS.ink, fontWeight: '800', marginTop: 5, marginRight: 28 }, modalCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 6, marginBottom: 12 }, input: { minHeight: 47, backgroundColor: COLORS.white, borderRadius: 13, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, paddingVertical: 11, color: COLORS.ink, fontSize: 13, marginBottom: 9 }, textArea: { minHeight: 88, textAlignVertical: 'top' }, importNote: { color: '#8A765D', fontSize: 11, lineHeight: 16, marginBottom: 8 }, detailStats: { flexDirection: 'row', gap: 7, flexWrap: 'wrap', marginVertical: 7 }, sourceLine: { color: COLORS.muted, fontSize: 11, marginBottom: 7 }, reviewBox: { color: '#805C35', backgroundColor: '#FFF0D8', padding: 11, borderRadius: 12, fontSize: 12, lineHeight: 17, marginVertical: 7 }, detailLine: { fontSize: 13, color: COLORS.ink, lineHeight: 21, marginBottom: 3 }, detailStep: { color: '#4E5D53', fontSize: 13, lineHeight: 20, marginBottom: 9 }, stepNumber: { color: COLORS.green, fontWeight: '800' }, modalButtonStack: { marginTop: 10 }, cookStepCard: { backgroundColor: COLORS.greenSoft, borderRadius: 18, padding: 18, marginVertical: 13, minHeight: 145, justifyContent: 'center' }, cookStepText: { fontSize: 19, lineHeight: 28, color: COLORS.ink, fontWeight: '700' }, pickerRow: { flexDirection: 'row', alignItems: 'center', minHeight: 59, borderBottomWidth: 1, borderBottomColor: COLORS.line }, pickerTitle: { color: COLORS.ink, fontSize: 13, fontWeight: '700' },
-});
+  shopActions: { flexDirection: 'row', gap: 8 }, aisleTitle: { fontSize: 13, color: COLORS.green, fontWeight: '800', marginTop: 13, marginBottom: 7 }, shopRow: { minHeight: 54, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, marginBottom: 8 }, cookIngredient: { minHeight: 50, backgroundColor: COLORS.white, borderRadius: 13, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 7 }, checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: COLORS.muted, marginRight: 11, justifyContent: 'center', alignItems: 'center' }, checkboxChecked: { backgroundColor: COLORS.green, borderColor: COLORS.green }, checkmark: { color: COLORS.buttonText, fontSize: 13, fontWeight: '800' }, shopName: { color: COLORS.ink, fontSize: 13, flex: 1 }, shopDone: { textDecorationLine: 'line-through', color: COLORS.muted }, shopArrow: { fontSize: 20, color: COLORS.muted }, emptyCard: { backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 20, alignItems: 'center', padding: 25, marginTop: 14 }, emptyEmoji: { fontSize: 42 }, emptyTitle: { color: COLORS.ink, fontSize: 17, fontWeight: '800', marginTop: 10, textAlign: 'center' },
+  tabBar: { minHeight: 67, backgroundColor: COLORS.white, borderTopWidth: 1, borderTopColor: COLORS.line, paddingHorizontal: 4, paddingTop: 7, paddingBottom: Platform.OS === 'ios' ? 7 : 5, flexDirection: 'row', justifyContent: 'space-around' }, tabItem: { minWidth: 52, alignItems: 'center', justifyContent: 'center' }, tabEmoji: { fontSize: 17, color: COLORS.muted }, tabEmojiActive: { color: COLORS.green, fontWeight: '800' }, tabLabel: { fontSize: 9, color: COLORS.muted, marginTop: 3 }, tabLabelActive: { color: COLORS.green, fontWeight: '800' }, tabDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: COLORS.green, position: 'absolute', bottom: -3 },
+  modalBackdrop: { flex: 1, backgroundColor: '#000000B8', justifyContent: 'flex-end' }, keyboardWrap: { justifyContent: 'flex-end', flex: 1 }, modalSheet: { maxHeight: '92%', backgroundColor: COLORS.cream, borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20, paddingTop: 13 }, modalGrabber: { height: 4, width: 38, borderRadius: 3, backgroundColor: COLORS.line, alignSelf: 'center', marginBottom: 15 }, modalClose: { position: 'absolute', top: 10, right: 18, width: 34, height: 34, alignItems: 'center', justifyContent: 'center', zIndex: 2 }, modalCloseText: { color: COLORS.muted, fontSize: 26, lineHeight: 30 }, modalEyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 1.3, marginTop: 8 }, modalTitle: { fontFamily: 'serif', fontSize: 25, lineHeight: 30, color: COLORS.ink, fontWeight: '700', marginTop: 5, marginRight: 28 }, modalCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 6, marginBottom: 12 }, input: { minHeight: 47, backgroundColor: COLORS.white, borderRadius: 13, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, paddingVertical: 11, color: COLORS.ink, fontSize: 13, marginBottom: 9 }, textArea: { minHeight: 88, textAlignVertical: 'top' }, importNote: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginBottom: 8 }, detailStats: { flexDirection: 'row', gap: 7, flexWrap: 'wrap', marginVertical: 7 }, sourceLine: { color: COLORS.muted, fontSize: 11, marginBottom: 7 }, reviewBox: { color: COLORS.warningText, backgroundColor: COLORS.warning, padding: 11, borderRadius: 12, fontSize: 12, lineHeight: 17, marginVertical: 7 }, detailLine: { fontSize: 13, color: COLORS.ink, lineHeight: 21, marginBottom: 3 }, detailStep: { color: COLORS.muted, fontSize: 13, lineHeight: 20, marginBottom: 9 }, stepNumber: { color: COLORS.green, fontWeight: '800' }, modalButtonStack: { marginTop: 10 }, cookStepCard: { backgroundColor: COLORS.greenSoft, borderRadius: 18, padding: 18, marginVertical: 13, minHeight: 145, justifyContent: 'center' }, cookStepText: { fontSize: 19, lineHeight: 28, color: COLORS.ink, fontWeight: '700' }, pickerRow: { flexDirection: 'row', alignItems: 'center', minHeight: 59, borderBottomWidth: 1, borderBottomColor: COLORS.line }, pickerTitle: { color: COLORS.ink, fontSize: 13, fontWeight: '700' },
+  });
+}
