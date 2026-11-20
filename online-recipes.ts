@@ -70,7 +70,23 @@ export async function searchOnlineMeals(query: string, byIngredient = false): Pr
   const value = byIngredient ? term.replace(/\s+/g, '_') : term;
   const payload = await requestJson(`${API_ROOT}/${endpoint}${encodeURIComponent(value)}`);
   const meals = asMeals(payload);
-  if (!byIngredient) return meals.map(toOnlineMeal).filter((meal): meal is OnlineMeal => Boolean(meal));
+  if (!byIngredient) {
+    const namedMeals = meals.map(toOnlineMeal).filter((meal): meal is OnlineMeal => Boolean(meal));
+    const areaMeals = await requestJson(`${API_ROOT}/filter.php?a=${encodeURIComponent(term.replace(/\s+/g, '_'))}`)
+      .then(asMeals)
+      .catch(() => [] as MealDbItem[]);
+    const areaDetails = await Promise.all(areaMeals.slice(0, 8).map(async (meal) => {
+      const id = typeof meal.idMeal === 'string' ? meal.idMeal : '';
+      if (!id || namedMeals.some((item) => item.id === id)) return null;
+      try {
+        const result = await requestJson(`${API_ROOT}/lookup.php?i=${encodeURIComponent(id)}`);
+        return asMeals(result).map(toOnlineMeal).find((item): item is OnlineMeal => Boolean(item)) || null;
+      } catch {
+        return null;
+      }
+    }));
+    return [...namedMeals, ...areaDetails.filter((meal): meal is OnlineMeal => Boolean(meal))];
+  }
 
   const details = await Promise.all(meals.slice(0, 8).map(async (meal) => {
     const id = typeof meal.idMeal === 'string' ? meal.idMeal : '';

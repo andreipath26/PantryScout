@@ -503,12 +503,12 @@ function PantryScoutApp() {
         {(['saved', 'online'] as const).map((view) => <Pressable key={view} accessibilityRole="tab" accessibilityState={{ selected: recipeView === view }} onPress={() => setRecipeView(view)}><Pill color={recipeView === view ? COLORS.greenSoft : COLORS.pale}>{view === 'saved' ? 'My recipes' : 'Online ideas'}</Pill></Pressable>)}
       </View>
       {recipeView === 'online' ? <>
-        <View style={styles.onlineSearchRow}><View style={[styles.searchBox, styles.onlineSearchBox]}><Text style={styles.searchIcon}>⌕</Text><TextInput value={onlineQuery} onChangeText={setOnlineQuery} onSubmitEditing={() => runOnlineSearch()} returnKeyType="search" placeholder="Dish, ingredient, or cuisine" placeholderTextColor={COLORS.muted} style={styles.searchInput} /></View><Button label="Search" onPress={() => runOnlineSearch()} disabled={!onlineQuery.trim() || onlineLoading} compact /></View>
+        <View style={styles.onlineSearchRow}><View style={[styles.searchBox, styles.onlineSearchBox]}><Text style={styles.searchIcon}>⌕</Text><TextInput value={onlineQuery} onChangeText={setOnlineQuery} onSubmitEditing={() => runOnlineSearch()} returnKeyType="search" placeholder="Dish or cuisine" placeholderTextColor={COLORS.muted} style={styles.searchInput} /></View><Button label="Search" onPress={() => runOnlineSearch()} disabled={!onlineQuery.trim() || onlineLoading} compact /></View>
         <Text style={styles.sectionHint}>Or search using an ingredient you already have:</Text>
         <View style={styles.filterLine}>{pantry.slice(0, 6).map((item) => <Pressable key={item.id} disabled={onlineLoading} onPress={() => runOnlineSearch(item.name, true)}><Pill color={COLORS.greenSoft}>{item.name}</Pill></Pressable>)}</View>
         {onlineLoading ? <View style={styles.searchLoading}><ActivityIndicator color={COLORS.green} /><Text style={styles.sectionHint}>Finding recipes…</Text></View> : null}
         {onlineError ? <View style={styles.reviewBox}><Text style={styles.reviewBoxText}>{onlineError}</Text></View> : null}
-        {!onlineLoading && !onlineError && onlineResults.length === 0 ? <View style={styles.emptyCard}><Text style={styles.emptyEmoji}>🌐</Text><Text style={styles.emptyTitle}>What are you in the mood for?</Text><Text style={styles.emptyText}>Search by dish, ingredient, or cuisine. Tap a pantry ingredient to find recipes that use it.</Text></View> : null}
+        {!onlineLoading && !onlineError && onlineResults.length === 0 ? <View style={styles.emptyCard}><Text style={styles.emptyEmoji}>🌐</Text><Text style={styles.emptyTitle}>What are you in the mood for?</Text><Text style={styles.emptyText}>Search by dish or cuisine. Tap a pantry ingredient to find recipes that use it.</Text></View> : null}
         {onlineResults.map((meal) => {
           const recipe = toSavedOnlineRecipe(meal);
           const count = recipeMatch(recipe, pantry);
