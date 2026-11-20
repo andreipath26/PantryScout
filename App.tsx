@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useShareIntent } from 'expo-share-intent';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchRecipePage } from './recipe-import';
@@ -170,6 +171,7 @@ function PantryScoutApp() {
   const [recipes, setRecipes] = useState<Recipe[]>(SEED_RECIPES);
   const [shopping, setShopping] = useState<ShopItem[]>([]);
   const [plan, setPlan] = useState<Record<string, string>>({ Mon: 'r1', Tue: 'r2', Wed: 'r3' });
+  const [queue, setQueue] = useState<string[]>([]);
   const [ready, setReady] = useState(false);
   const [search, setSearch] = useState('');
   const [pantryName, setPantryName] = useState('');
@@ -185,6 +187,7 @@ function PantryScoutApp() {
   const [importError, setImportError] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [cookStep, setCookStep] = useState(0);
+  const [checkedCookIngredients, setCheckedCookIngredients] = useState<string[]>([]);
   const [pickerDay, setPickerDay] = useState('Mon');
   const [recipeFilter, setRecipeFilter] = useState<'all' | 'saved' | 'pantry'>('all');
   const lastBackPress = useRef(0);
@@ -216,6 +219,12 @@ function PantryScoutApp() {
   }, [tab]);
 
   useEffect(() => {
+    if (modal !== 'cook' || !selectedRecipe) return undefined;
+    activateKeepAwakeAsync('pantryscout-cook').catch(() => {});
+    return () => { deactivateKeepAwake('pantryscout-cook'); };
+  }, [modal, selectedRecipe]);
+
+  useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY).then((saved) => {
       if (saved) {
         const data: unknown = JSON.parse(saved);
@@ -223,6 +232,7 @@ function PantryScoutApp() {
           if (Array.isArray(data.pantry)) setPantry(data.pantry.filter(isPantryItem));
           if (Array.isArray(data.recipes)) setRecipes(data.recipes.filter(isRecipe));
           if (Array.isArray(data.shopping)) setShopping(data.shopping.filter(isShopItem));
+          if (Array.isArray(data.queue)) setQueue(data.queue.filter((value): value is string => typeof value === 'string'));
           if (isRecord(data.plan)) {
             setPlan(Object.fromEntries(Object.entries(data.plan).filter((entry): entry is [string, string] => DAYS.includes(entry[0]) && typeof entry[1] === 'string')));
           }
@@ -246,12 +256,12 @@ function PantryScoutApp() {
 
   useEffect(() => {
     if (!ready) return;
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ pantry, recipes, shopping, plan })).catch(() => {});
-  }, [ready, pantry, recipes, shopping, plan]);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ pantry, recipes, shopping, plan, queue })).catch(() => {});
+  }, [ready, pantry, recipes, shopping, plan, queue]);
 
   const matches = useMemo(() => recipes
-    .map((recipe) => ({ recipe, count: recipeMatch(recipe, pantry) }))
-    .sort((a, b) => b.count - a.count), [recipes, pantry]);
+    .map((recipe) => ({ recipe, count: recipeMatch(recipe, pantry), useSoon: recipe.ingredients.filter((ingredient) => pantry.some((item) => isUseSoon(item.expires) && hasPantryIngredient(ingredient, [item]))).length }))
+    .sort((a, b) => b.count - a.count || b.useSoon - a.useSoon || a.recipe.minutes - b.recipe.minutes), [recipes, pantry]);
   const visibleRecipes = recipes.filter((recipe) => {
     if (!normalized(`${recipe.title} ${recipe.tags.join(' ')}`).includes(normalized(search))) return false;
     if (recipeFilter === 'saved' && !recipe.saved) return false;
@@ -280,7 +290,7 @@ function PantryScoutApp() {
   }
   function createFromPantry() {
     if (!pantry.length) { setTab('Pantry'); setModal('pantry'); return; }
-    const names = pantry.slice(0, 5).map((item) => item.name);
+    const names = [...pantry].sort((a, b) => Number(isUseSoon(b.expires)) - Number(isUseSoon(a.expires))).slice(0, 5).map((item) => item.name);
     const hasPasta = names.some((name) => /pasta|noodle/i.test(name));
     const hasEgg = names.some((name) => /egg/i.test(name));
     const title = hasPasta ? 'Pantry pasta toss' : hasEgg ? 'Fridge-clear veggie scramble' : 'Pantry freestyle skillet';
@@ -372,7 +382,8 @@ function PantryScoutApp() {
   function toggleShopping(itemId: string) { setShopping((items) => items.map((item) => item.id === itemId ? { ...item, checked: !item.checked } : item)); }
   function removePantry(itemId: string) { setPantry((items) => items.filter((item) => item.id !== itemId)); }
   function toggleSaved(recipeId: string) { setRecipes((items) => items.map((item) => item.id === recipeId ? { ...item, saved: !item.saved } : item)); }
-  function assignPlan(recipeId: string) { setPlan((current) => ({ ...current, [pickerDay]: recipeId })); setModal(null); }
+  function toggleQueue(recipeId: string) { setQueue((items) => items.includes(recipeId) ? items.filter((item) => item !== recipeId) : [...items, recipeId]); }
+  function assignPlan(recipeId: string) { setPlan((current) => ({ ...current, [pickerDay]: recipeId })); setQueue((items) => items.filter((item) => item !== recipeId)); setModal(null); }
 
   const Pill = ({ children, color = COLORS.pale }: { children: React.ReactNode; color?: string }) => (
     <View style={[styles.pill, { backgroundColor: color }]}><Text style={styles.pillText}>{children}</Text></View>
@@ -410,7 +421,7 @@ function PantryScoutApp() {
       {useSoon.length > 0 && <View style={styles.useSoon}><Text style={styles.useSoonIcon}>⏳</Text><Text style={styles.useSoonText}>Use soon: {useSoon.map((item) => item.name.toLowerCase()).join(', ')}</Text></View>}
       <SectionTitle title="Ideas from your pantry" action="See all" onPress={() => setTab('Recipes')} />
       <Text style={styles.sectionHint}>Suggestions use what you already have and show what’s missing.</Text>
-      {top.map(({ recipe }) => <RecipeCard key={recipe.id} recipe={recipe} />)}
+      {top.map(({ recipe, count, useSoon }) => <View key={recipe.id}><RecipeCard recipe={recipe} /><Text style={styles.sectionHint}>{count} of {recipe.ingredients.length} ingredients on hand{useSoon ? ` · uses ${useSoon} item${useSoon === 1 ? '' : 's'} marked “use soon”` : ''}</Text></View>)}
       <View style={styles.featureCard}><Text style={styles.featureKicker}>YOUR WEEK, LESS WORK</Text><Text style={styles.featureTitle}>Plan meals. Get one tidy shopping list.</Text><Text style={styles.featureCopy}>Pick recipes from your library and PantryScout collects the ingredients you still need.</Text><Button label="Open meal planner →" onPress={() => setTab('Plan')} compact /></View>
     </>;
   }
@@ -441,8 +452,13 @@ function PantryScoutApp() {
     </>;
   }
   function renderPlan() {
+    const queuedRecipes = queue.map((recipeId) => recipes.find((recipe) => recipe.id === recipeId)).filter((recipe): recipe is Recipe => Boolean(recipe));
     return <>
       <View style={styles.pageIntro}><Text style={styles.eyebrow}>MAKE THE WEEK EASIER</Text><Text style={styles.pageTitle}>Meal plan</Text><Text style={styles.pageCopy}>Choose what to cook. Your shopping list can follow the plan.</Text></View>
+      <SectionTitle title={`Cook soon${queuedRecipes.length ? ` · ${queuedRecipes.length}` : ''}`} action="Browse recipes" onPress={() => setTab('Recipes')} />
+      <Text style={styles.sectionHint}>Keep good ideas here until you know which day they fit.</Text>
+      {queuedRecipes.length ? queuedRecipes.map((recipe) => <View key={recipe.id} style={styles.queueRow}><Pressable style={{ flex: 1 }} onPress={() => openRecipe(recipe)}><Text style={styles.pickerTitle}>{recipe.title}</Text><Text style={styles.ingredientMeta}>{recipe.minutes} min · {recipeMatch(recipe, pantry)}/{recipe.ingredients.length} ingredients at home</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${recipe.title} from Cook soon`} onPress={() => toggleQueue(recipe.id)} style={styles.queueRemove}><Text style={styles.remove}>×</Text></Pressable></View>) : <View style={styles.emptyQueue}><Text style={styles.emptyText}>Save recipes here before assigning them to a day.</Text><Button label="Find recipes" onPress={() => setTab('Recipes')} secondary compact /></View>}
+      <SectionTitle title="This week" />
       <View style={styles.weekCard}>{DAYS.map((day) => {
         const recipe = plannedRecipe(day);
         return <Pressable key={day} style={styles.dayRow} onPress={() => { setPickerDay(day); setModal('picker'); }}><View style={styles.dayBadge}><Text style={styles.dayText}>{day}</Text></View><View style={{ flex: 1 }}><Text style={styles.dayMeal}>{recipe?.title || 'Choose a meal'}</Text><Text style={styles.dayMeta}>{recipe ? `${recipe.minutes} min · ${recipe.servings} servings` : 'Tap to add a recipe'}</Text></View><Text style={styles.chevron}>›</Text></Pressable>;
@@ -521,14 +537,14 @@ function PantryScoutApp() {
       <SectionTitle title="Ingredients" />
       {selectedRecipe.ingredients.length ? selectedRecipe.ingredients.map((ingredient, index) => <Text key={`${ingredient}-${index}`} style={styles.detailLine}>•  {ingredient}</Text>) : <Text style={styles.emptyText}>No ingredients detected yet.</Text>}
       {selectedRecipe.steps.length ? <><SectionTitle title="Method" />{selectedRecipe.steps.map((step, index) => <Text key={`${step}-${index}`} style={styles.detailStep}><Text style={styles.stepNumber}>{index + 1}. </Text>{step}</Text>)}</> : null}
-      <View style={styles.modalButtonStack}><Button label="Edit recipe" onPress={() => beginEditRecipe(selectedRecipe)} secondary /><Button label="Start cook mode" onPress={() => { setCookStep(0); setModal('cook'); }} /><Button label="Add missing ingredients to list" onPress={() => addToShopping(selectedRecipe)} secondary /></View>
+      <View style={styles.modalButtonStack}><Button label="Edit recipe" onPress={() => beginEditRecipe(selectedRecipe)} secondary /><Button label={queue.includes(selectedRecipe.id) ? 'Remove from Cook soon' : '＋ Add to Cook soon'} onPress={() => toggleQueue(selectedRecipe.id)} secondary /><Button label="Start cook mode" onPress={() => { setCookStep(0); setCheckedCookIngredients([]); setModal('cook'); }} /><Button label="Add missing ingredients to list" onPress={() => addToShopping(selectedRecipe)} secondary /></View>
     </>;
     if (modal === 'cook' && selectedRecipe) return <>
-      <Text style={styles.modalEyebrow}>COOK MODE · {selectedRecipe.title}</Text><Text style={styles.modalTitle}>Step {Math.min(cookStep + 1, selectedRecipe.steps.length || 1)} of {selectedRecipe.steps.length || 1}</Text>
+      <Text style={styles.modalEyebrow}>COOK MODE · SCREEN STAYS AWAKE</Text><Text style={styles.modalTitle}>Step {Math.min(cookStep + 1, selectedRecipe.steps.length || 1)} of {selectedRecipe.steps.length || 1}</Text><Text style={styles.modalCopy}>{selectedRecipe.title} · tap ingredients as you use them</Text>
       <View style={styles.cookStepCard}><Text style={styles.cookStepText}>{selectedRecipe.steps[cookStep] || 'Add the ingredients and method to this recipe to use cook mode.'}</Text></View>
-      <Text style={styles.modalCopy}>Ingredients for this step</Text>
-      {selectedRecipe.ingredients.slice(0, 4).map((item, index) => <Text key={`${item}-${index}`} style={styles.detailLine}>•  {item}</Text>)}
-      <View style={styles.modalButtonStack}><Button label={cookStep + 1 >= selectedRecipe.steps.length ? 'Finish cooking' : 'Next step →'} onPress={() => { if (cookStep + 1 >= selectedRecipe.steps.length) setModal('recipe'); else setCookStep((step) => step + 1); }} /><Button label="Back to recipe" onPress={() => setModal('recipe')} secondary /></View>
+      <Text style={styles.modalCopy}>Ingredients · {checkedCookIngredients.length}/{selectedRecipe.ingredients.length} ready</Text>
+      {selectedRecipe.ingredients.map((item) => { const checked = checkedCookIngredients.includes(item); return <Pressable key={item} accessibilityRole="checkbox" accessibilityState={{ checked }} onPress={() => setCheckedCookIngredients((items) => checked ? items.filter((value) => value !== item) : [...items, item])} style={styles.cookIngredient}><View style={[styles.checkbox, checked && styles.checkboxChecked]}>{checked ? <Text style={styles.checkmark}>✓</Text> : null}</View><Text style={[styles.shopName, checked && styles.shopDone]}>{item}</Text></Pressable>; })}
+      <View style={styles.modalButtonStack}>{cookStep > 0 && <Button label="← Previous step" onPress={() => setCookStep((step) => Math.max(0, step - 1))} secondary />}{selectedRecipe.steps.length > 0 && <Button label={cookStep + 1 >= selectedRecipe.steps.length ? 'Finish cooking' : 'Next step →'} onPress={() => { if (cookStep + 1 >= selectedRecipe.steps.length) setModal('recipe'); else setCookStep((step) => step + 1); }} />}{selectedRecipe.steps.length === 0 && <Button label="Back to recipe" onPress={() => setModal('recipe')} secondary />}</View>
     </>;
     if (modal === 'picker') return <>
       <Text style={styles.modalEyebrow}>WEEKLY MEAL PLAN</Text><Text style={styles.modalTitle}>Choose for {pickerDay}</Text><Text style={styles.modalCopy}>Pick a saved recipe. Add another one to your cookbook if it’s missing.</Text>
@@ -581,7 +597,8 @@ const styles = StyleSheet.create({
   pageIntro: { marginTop: 10, marginBottom: 16 }, pageTitle: { fontSize: 31, fontWeight: '800', color: COLORS.ink, letterSpacing: -0.9, marginTop: 5 }, pageCopy: { fontSize: 13, lineHeight: 19, color: COLORS.muted, marginTop: 6 }, searchBox: { height: 47, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 12 }, searchIcon: { color: COLORS.muted, fontSize: 24, marginRight: 7 }, searchInput: { flex: 1, paddingVertical: 0, color: COLORS.ink, fontSize: 13 }, inlineActions: { flexDirection: 'row', gap: 8 }, filterLine: { flexDirection: 'row', gap: 7, marginVertical: 8, flexWrap: 'wrap' }, emptyText: { color: COLORS.muted, fontSize: 13, lineHeight: 20, marginVertical: 8 },
   inventorySummary: { backgroundColor: COLORS.greenSoft, borderRadius: 19, padding: 17, flexDirection: 'row', alignItems: 'center', marginBottom: 13 }, inventoryCount: { color: COLORS.green, fontSize: 34, fontWeight: '800', marginRight: 12 }, inventoryTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, inventorySub: { color: COLORS.muted, fontSize: 11, marginTop: 3 }, inventoryEmoji: { fontSize: 31, marginLeft: 'auto' }, ingredientRow: { backgroundColor: COLORS.white, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', padding: 12, marginBottom: 8 }, ingredientDot: { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.cream, alignItems: 'center', justifyContent: 'center', marginRight: 10 }, ingredientName: { color: COLORS.ink, fontSize: 14, fontWeight: '700' }, ingredientMeta: { color: COLORS.muted, fontSize: 11, marginTop: 3 }, remove: { color: '#9D6F5B', fontSize: 24, paddingHorizontal: 7 }, tipCard: { borderRadius: 17, backgroundColor: '#EEEDE5', padding: 15, marginTop: 16 }, tipTitle: { color: COLORS.ink, fontSize: 14, fontWeight: '800' }, tipCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 6 },
   weekCard: { backgroundColor: COLORS.white, borderRadius: 19, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, marginBottom: 14 }, dayRow: { minHeight: 66, flexDirection: 'row', alignItems: 'center', borderBottomColor: COLORS.line, borderBottomWidth: 1, gap: 11 }, dayBadge: { width: 42, height: 42, borderRadius: 14, backgroundColor: COLORS.greenSoft, alignItems: 'center', justifyContent: 'center' }, dayText: { color: COLORS.green, fontSize: 12, fontWeight: '800' }, dayMeal: { color: COLORS.ink, fontSize: 13, fontWeight: '700' }, dayMeta: { color: COLORS.muted, fontSize: 11, marginTop: 4 }, chevron: { color: COLORS.muted, fontSize: 24, marginHorizontal: 5 },
-  shopActions: { flexDirection: 'row', gap: 8 }, shopRow: { minHeight: 54, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, marginBottom: 8 }, checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: '#B5C0B8', marginRight: 11, justifyContent: 'center', alignItems: 'center' }, checkboxChecked: { backgroundColor: COLORS.green, borderColor: COLORS.green }, checkmark: { color: COLORS.white, fontSize: 13, fontWeight: '800' }, shopName: { color: COLORS.ink, fontSize: 13, flex: 1 }, shopDone: { textDecorationLine: 'line-through', color: COLORS.muted }, shopArrow: { fontSize: 20, color: COLORS.muted }, emptyCard: { backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 20, alignItems: 'center', padding: 25, marginTop: 14 }, emptyEmoji: { fontSize: 42 }, emptyTitle: { color: COLORS.ink, fontSize: 17, fontWeight: '800', marginTop: 10, textAlign: 'center' },
+  queueRow: { flexDirection: 'row', alignItems: 'center', minHeight: 64, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, marginBottom: 8 }, queueRemove: { paddingHorizontal: 6, paddingVertical: 4 }, emptyQueue: { backgroundColor: COLORS.white, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line, padding: 13, marginBottom: 12 },
+  shopActions: { flexDirection: 'row', gap: 8 }, shopRow: { minHeight: 54, backgroundColor: COLORS.white, borderRadius: 14, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, marginBottom: 8 }, cookIngredient: { minHeight: 50, backgroundColor: COLORS.white, borderRadius: 13, borderWidth: 1, borderColor: COLORS.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 7 }, checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: '#B5C0B8', marginRight: 11, justifyContent: 'center', alignItems: 'center' }, checkboxChecked: { backgroundColor: COLORS.green, borderColor: COLORS.green }, checkmark: { color: COLORS.white, fontSize: 13, fontWeight: '800' }, shopName: { color: COLORS.ink, fontSize: 13, flex: 1 }, shopDone: { textDecorationLine: 'line-through', color: COLORS.muted }, shopArrow: { fontSize: 20, color: COLORS.muted }, emptyCard: { backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 20, alignItems: 'center', padding: 25, marginTop: 14 }, emptyEmoji: { fontSize: 42 }, emptyTitle: { color: COLORS.ink, fontSize: 17, fontWeight: '800', marginTop: 10, textAlign: 'center' },
   tabBar: { minHeight: 67, backgroundColor: COLORS.white, borderTopWidth: 1, borderTopColor: COLORS.line, paddingHorizontal: 4, paddingTop: 7, paddingBottom: Platform.OS === 'ios' ? 7 : 5, flexDirection: 'row', justifyContent: 'space-around' }, tabItem: { minWidth: 52, alignItems: 'center', justifyContent: 'center' }, tabEmoji: { fontSize: 17, color: '#98A19B' }, tabEmojiActive: { color: COLORS.green, fontWeight: '800' }, tabLabel: { fontSize: 9, color: '#89938C', marginTop: 3 }, tabLabelActive: { color: COLORS.green, fontWeight: '800' }, tabDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: COLORS.green, position: 'absolute', bottom: -3 },
   modalBackdrop: { flex: 1, backgroundColor: '#14221BB0', justifyContent: 'flex-end' }, keyboardWrap: { justifyContent: 'flex-end', flex: 1 }, modalSheet: { maxHeight: '92%', backgroundColor: COLORS.cream, borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20, paddingTop: 13 }, modalGrabber: { height: 4, width: 38, borderRadius: 3, backgroundColor: '#CBD1C8', alignSelf: 'center', marginBottom: 15 }, modalClose: { position: 'absolute', top: 10, right: 18, width: 34, height: 34, alignItems: 'center', justifyContent: 'center', zIndex: 2 }, modalCloseText: { color: COLORS.muted, fontSize: 26, lineHeight: 30 }, modalEyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 1.3, marginTop: 8 }, modalTitle: { fontSize: 25, lineHeight: 30, color: COLORS.ink, fontWeight: '800', marginTop: 5, marginRight: 28 }, modalCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 6, marginBottom: 12 }, input: { minHeight: 47, backgroundColor: COLORS.white, borderRadius: 13, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 13, paddingVertical: 11, color: COLORS.ink, fontSize: 13, marginBottom: 9 }, textArea: { minHeight: 88, textAlignVertical: 'top' }, importNote: { color: '#8A765D', fontSize: 11, lineHeight: 16, marginBottom: 8 }, detailStats: { flexDirection: 'row', gap: 7, flexWrap: 'wrap', marginVertical: 7 }, sourceLine: { color: COLORS.muted, fontSize: 11, marginBottom: 7 }, reviewBox: { color: '#805C35', backgroundColor: '#FFF0D8', padding: 11, borderRadius: 12, fontSize: 12, lineHeight: 17, marginVertical: 7 }, detailLine: { fontSize: 13, color: COLORS.ink, lineHeight: 21, marginBottom: 3 }, detailStep: { color: '#4E5D53', fontSize: 13, lineHeight: 20, marginBottom: 9 }, stepNumber: { color: COLORS.green, fontWeight: '800' }, modalButtonStack: { marginTop: 10 }, cookStepCard: { backgroundColor: COLORS.greenSoft, borderRadius: 18, padding: 18, marginVertical: 13, minHeight: 145, justifyContent: 'center' }, cookStepText: { fontSize: 19, lineHeight: 28, color: COLORS.ink, fontWeight: '700' }, pickerRow: { flexDirection: 'row', alignItems: 'center', minHeight: 59, borderBottomWidth: 1, borderBottomColor: COLORS.line }, pickerTitle: { color: COLORS.ink, fontSize: 13, fontWeight: '700' },
 });
