@@ -31,7 +31,7 @@ Then use Expo Go for the UI preview. Incoming system shares require a native dev
 
 ## Android preview build
 
-The GitHub Actions **Android APK** workflow builds a debug APK on pull requests and pushes. Download the `pantryscout-android-debug` artifact from the completed workflow run, install the APK on an Android device, and open PantryScout. The APK is unsigned for Play Store release, but can be installed for direct testing.
+The GitHub Actions **Android APK** workflow builds a self-contained release APK on pull requests and pushes. Download the `pantryscout-android-release` artifact from the completed workflow run and install it on an Android device. It includes the JavaScript bundle and does not need Metro or a computer running beside the phone. The test APK uses the repository's debug signing key and is not a Play Store release.
 
 ## Working principles
 
