@@ -237,7 +237,7 @@ export default function App() {
       }
     }
     const pasted = importText.trim() ? parseImportedText(importText.trim(), source) : null;
-    const item: Recipe = pasted && (pasted.ingredients.length || pasted.steps.length)
+    const item: Recipe = pasted
       ? pasted
       : pageRecipe
         ? { id: id(), ...pageRecipe, tags: ['Imported'], source, status: pageRecipe.ingredients.length && pageRecipe.steps.length ? 'ready' : 'review', saved: true }
@@ -274,8 +274,8 @@ export default function App() {
   const Pill = ({ children, color = COLORS.pale }: { children: React.ReactNode; color?: string }) => (
     <View style={[styles.pill, { backgroundColor: color }]}><Text style={styles.pillText}>{children}</Text></View>
   );
-  const Button = ({ label, onPress, secondary = false, compact = false }: { label: string; onPress: () => void; secondary?: boolean; compact?: boolean }) => (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.button, secondary && styles.buttonSecondary, compact && styles.buttonCompact, pressed && { opacity: 0.82 }]}>
+  const Button = ({ label, onPress, secondary = false, compact = false, disabled = false }: { label: string; onPress: () => void; secondary?: boolean; compact?: boolean; disabled?: boolean }) => (
+    <Pressable onPress={onPress} disabled={disabled} style={({ pressed }) => [styles.button, secondary && styles.buttonSecondary, compact && styles.buttonCompact, (pressed || disabled) && { opacity: disabled ? 0.55 : 0.82 }]}>
       <Text style={[styles.buttonText, secondary && styles.buttonTextSecondary, compact && styles.buttonTextCompact]}>{label}</Text>
     </Pressable>
   );
@@ -402,7 +402,7 @@ export default function App() {
       <TextInput value={importText} onChangeText={setImportText} placeholder={'Paste recipe text here\nTitle, ingredients and method'} placeholderTextColor={COLORS.muted} style={[styles.input, styles.textArea]} multiline />
       <Text style={styles.importNote}>We’ll try to read recipe details published by the page. If the site blocks access, save the link and add the details yourself.</Text>
       {importError ? <Text style={styles.reviewNote}>{importError}</Text> : null}
-      <Button label={importing ? 'Reading recipe…' : 'Import recipe'} onPress={importRecipe} />
+      <Button label={importing ? 'Reading recipe…' : 'Import recipe'} onPress={importRecipe} disabled={importing} />
     </>;
     if (modal === 'recipe' && selectedRecipe) return <>
       <Text style={styles.modalEyebrow}>{selectedRecipe.tags.join(' · ')}</Text><Text style={styles.modalTitle}>{selectedRecipe.title}</Text><Text style={styles.modalCopy}>{selectedRecipe.description}</Text>
