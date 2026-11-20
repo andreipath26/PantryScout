@@ -10,7 +10,12 @@ export type ImportedRecipeData = {
 
 function text(value: unknown): string {
   if (typeof value !== 'string') return '';
-  return value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return value.replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&nbsp;/gi, ' ')
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code)))
+    .replace(/&#x([\da-f]+);/gi, (_, code: string) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/\s+/g, ' ').trim();
 }
 
 function values(value: unknown): string[] {
@@ -29,7 +34,8 @@ function findRecipes(value: unknown): Record<string, unknown>[] {
   if (!value || typeof value !== 'object') return [];
   const object = value as Record<string, unknown>;
   const type = object['@type'];
-  const isRecipe = type === 'Recipe' || (Array.isArray(type) && type.includes('Recipe'));
+  const types = (Array.isArray(type) ? type : [type]).filter((item): item is string => typeof item === 'string');
+  const isRecipe = types.some((item) => item.split(/[\/#]/).pop() === 'Recipe');
   return [...(isRecipe ? [object] : []), ...Object.values(object).flatMap(findRecipes)];
 }
 
@@ -86,8 +92,20 @@ export async function fetchRecipePage(url: string): Promise<ImportedRecipeData |
   let parsed: URL;
   try { parsed = new URL(url); } catch { throw new Error('Enter a complete recipe URL, including https://.'); }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('Recipe links must use http or https.');
-  const response = await fetch(parsed.toString(), { headers: { Accept: 'text/html,application/xhtml+xml' } });
-  if (!response.ok) throw new Error(`That page could not be opened (HTTP ${response.status}). You can still save its link and paste the recipe text.`);
-  const html = await response.text();
-  return parseRecipePage(html);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(parsed.toString(), {
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`That page could not be opened (HTTP ${response.status}). You can still save its link and paste the recipe text.`);
+    const html = await response.text();
+    return parseRecipePage(html);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('That page took too long to respond. You can still save its link and paste the recipe text.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
