@@ -8,17 +8,21 @@ PantryScout is a personal cooking app built around the full path from finding a 
 
 - **Recipe inbox:** share a recipe URL from another app or paste a link/text, keep its source, and review the imported result. Recipe pages that publish Schema.org Recipe data are parsed into ingredients, steps, timing, and servings; other links are saved for manual completion.
 - **Personal cookbook:** save, search, tag, create, and revisit recipes.
+- **Online recipe discovery:** search by dish name or use an ingredient from the pantry, review the full recipe and source, then save it to the cookbook.
 - **Pantry:** keep a lightweight list of ingredients and items to use soon.
 - **PantryScout ideas:** rank saved recipes by pantry match and create a flexible recipe idea from available ingredients.
 - **Meal planner:** assign cookbook recipes to days of the week.
 - **Shopping list:** combine missing ingredients from recipes and plans, check items off, and add freeform items.
 - **Cook mode:** follow one recipe step at a time from a phone.
+- **Appearance:** choose Light, Dark, or System; the choice is saved on the device.
 
 ## Current build
 
 The initial mobile app foundation is an Expo + React Native + TypeScript app for Android and iOS, with a web preview target. It stores the cookbook, pantry, plan, and shopping list locally on the device. It includes sample content so the connected flows are visible immediately.
 
 Recipe text can be pasted into the importer and the source link is retained. A link without readable recipe text is saved for review. Direct extraction from social video, webpage parsing, photo/OCR import, cloud accounts, and household syncing need the next service layer; this build does not claim those integrations are complete.
+
+Online recipe discovery uses TheMealDB's development key for this private test build. TheMealDB says its development key is for development or educational use and requires a supporter key for a public app-store release. Recipe results show TheMealDB attribution and preserve the original recipe source.
 
 ## Run it
 
