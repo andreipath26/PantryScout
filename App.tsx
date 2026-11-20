@@ -1,20 +1,24 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { useShareIntent } from 'expo-share-intent';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchRecipePage } from './recipe-import';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
+  BackHandler,
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  ToastAndroid,
+  type ScrollViewInstance,
   View,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Tab = 'Today' | 'Recipes' | 'Pantry' | 'Plan' | 'Shop';
 type Recipe = {
@@ -33,6 +37,30 @@ type Recipe = {
 type PantryItem = { id: string; name: string; quantity: string; expires?: string };
 type ShopItem = { id: string; name: string; checked: boolean };
 type ModalKind = 'import' | 'create' | 'edit' | 'pantry' | 'shop-add' | 'recipe' | 'cook' | 'picker' | null;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+function isPantryItem(value: unknown): value is PantryItem {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string' && typeof value.quantity === 'string' && (value.expires === undefined || typeof value.expires === 'string');
+}
+function isShopItem(value: unknown): value is ShopItem {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string' && typeof value.checked === 'boolean';
+}
+function isRecipe(value: unknown): value is Recipe {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.title === 'string'
+    && typeof value.description === 'string'
+    && typeof value.minutes === 'number'
+    && typeof value.servings === 'number'
+    && Array.isArray(value.ingredients) && value.ingredients.every((item) => typeof item === 'string')
+    && Array.isArray(value.steps) && value.steps.every((item) => typeof item === 'string')
+    && Array.isArray(value.tags) && value.tags.every((item) => typeof item === 'string')
+    && (value.source === undefined || typeof value.source === 'string')
+    && (value.status === undefined || value.status === 'ready' || value.status === 'review')
+    && (value.saved === undefined || typeof value.saved === 'boolean');
+}
 
 const STORAGE_KEY = 'pantryscout.v1';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -80,10 +108,15 @@ const COLORS = {
 function id() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 function normalized(value: string) { return value.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim(); }
 function ingredientKey(value: string) {
-  return normalized(value)
-    .replace(/^\d+(?:\s+\d+\/\d+|\/\d+)?\s*/, '')
-    .replace(/^(?:g|kg|mg|ml|l|cl|oz|lb|lbs|cup|cups|tbsp|tsp|tablespoon|teaspoon|can|cans|tin|tins|clove|cloves|handful|handfuls|piece|pieces|slice|slices)\s+/, '')
-    .replace(/^(?:of)\s+/, '')
+  return value.toLowerCase()
+    .replace(/½/g, ' 1/2 ').replace(/¼/g, ' 1/4 ').replace(/¾/g, ' 3/4 ')
+    .replace(/⅓/g, ' 1/3 ').replace(/⅔/g, ' 2/3 ').replace(/⅛/g, ' 1/8 ')
+    .replace(/⅜/g, ' 3/8 ').replace(/⅝/g, ' 5/8 ').replace(/⅞/g, ' 7/8 ')
+    .replace(/[^a-z0-9./ ]/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/^\d+\/\d+\s*/, '')
+    .replace(/^\d+(?:\s*[x×]\s*\d+(?:\.\d+)?)?\s*/, '')
+    .replace(/^(?:(?:g|kg|mg|ml|l|cl|oz|lb|lbs|cup|cups|tbsp|tsp|tablespoon|teaspoon|can|cans|tin|tins|clove|cloves|handful|handfuls|piece|pieces|slice|slices|pinch|dash)\s+)+/, '')
+    .replace(/^(?:of|a|an|some)\s+/, '')
     .trim().split(/\s+/).map((word) => word.endsWith('ies') ? `${word.slice(0, -3)}y` : word.endsWith('oes') ? word.slice(0, -2) : word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word).join(' ');
 }
 function hasPantryIngredient(ingredient: string, pantry: PantryItem[]) {
@@ -103,8 +136,7 @@ function isUseSoon(expires?: string) {
   return expiry.getTime() <= today.getTime() + 3 * 24 * 60 * 60 * 1000;
 }
 function recipeMatch(recipe: Recipe, pantry: PantryItem[]) {
-  const names = pantry.map((item) => normalized(item.name));
-  return recipe.ingredients.filter((ingredient) => names.some((name) => name && normalized(ingredient).includes(name))).length;
+  return recipe.ingredients.filter((ingredient) => hasPantryIngredient(ingredient, pantry)).length;
 }
 function getSourceTitle(url: string) {
   try { return new URL(url).hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' '); }
@@ -127,8 +159,10 @@ function parseImportedText(raw: string, source: string): Recipe {
   };
 }
 
-export default function App() {
+function PantryScoutApp() {
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({ scheme: 'pantryscout' });
+  const insets = useSafeAreaInsets();
+  const mainScroll = useRef<ScrollViewInstance | null>(null);
   const [tab, setTab] = useState<Tab>('Today');
   const [modal, setModal] = useState<ModalKind>(null);
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
@@ -152,15 +186,47 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [cookStep, setCookStep] = useState(0);
   const [pickerDay, setPickerDay] = useState('Mon');
+  const [recipeFilter, setRecipeFilter] = useState<'all' | 'saved' | 'pantry'>('all');
+  const lastBackPress = useRef(0);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return undefined;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (modal) {
+        setModal(null);
+        return true;
+      }
+      if (tab !== 'Today') {
+        setTab('Today');
+        setSearch('');
+        lastBackPress.current = 0;
+        return true;
+      }
+      const now = Date.now();
+      if (now - lastBackPress.current < 2000) return false;
+      lastBackPress.current = now;
+      ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [modal, tab]);
+
+  useEffect(() => {
+    mainScroll.current?.scrollTo({ y: 0, animated: false });
+  }, [tab]);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY).then((saved) => {
       if (saved) {
-        const data = JSON.parse(saved);
-        if (data.pantry) setPantry(data.pantry);
-        if (data.recipes) setRecipes(data.recipes);
-        if (data.shopping) setShopping(data.shopping);
-        if (data.plan) setPlan(data.plan);
+        const data: unknown = JSON.parse(saved);
+        if (isRecord(data)) {
+          if (Array.isArray(data.pantry)) setPantry(data.pantry.filter(isPantryItem));
+          if (Array.isArray(data.recipes)) setRecipes(data.recipes.filter(isRecipe));
+          if (Array.isArray(data.shopping)) setShopping(data.shopping.filter(isShopItem));
+          if (isRecord(data.plan)) {
+            setPlan(Object.fromEntries(Object.entries(data.plan).filter((entry): entry is [string, string] => DAYS.includes(entry[0]) && typeof entry[1] === 'string')));
+          }
+        }
       }
     }).catch(() => {}).finally(() => setReady(true));
   }, []);
@@ -186,8 +252,20 @@ export default function App() {
   const matches = useMemo(() => recipes
     .map((recipe) => ({ recipe, count: recipeMatch(recipe, pantry) }))
     .sort((a, b) => b.count - a.count), [recipes, pantry]);
-  const visibleRecipes = recipes.filter((recipe) => normalized(`${recipe.title} ${recipe.tags.join(' ')}`).includes(normalized(search)));
+  const visibleRecipes = recipes.filter((recipe) => {
+    if (!normalized(`${recipe.title} ${recipe.tags.join(' ')}`).includes(normalized(search))) return false;
+    if (recipeFilter === 'saved' && !recipe.saved) return false;
+    if (recipeFilter === 'pantry' && recipeMatch(recipe, pantry) === 0) return false;
+    return true;
+  });
   const plannedRecipe = (day: string) => recipes.find((recipe) => recipe.id === plan[day]);
+
+  if (!ready) {
+    return <SafeAreaView style={styles.safe}>
+      <StatusBar style="dark" />
+      <View style={styles.loading}><ActivityIndicator color={COLORS.green} /><Text style={styles.loadingText}>Loading your kitchen…</Text></View>
+    </SafeAreaView>;
+  }
 
   function openRecipe(recipe: Recipe) { setSelectedRecipe(recipe); setModal('recipe'); }
   function addPantryItem() {
@@ -220,10 +298,12 @@ export default function App() {
   }
   function createRecipe() {
     if (!newTitle.trim()) return;
+    const ingredients = newIngredients.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const steps = newSteps.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     const item: Recipe = {
       id: id(), title: newTitle.trim(), description: 'Your recipe, ready to make your own.', minutes: 30, servings: 2,
-      ingredients: newIngredients.split(/\n|,/).map((x) => x.trim()).filter(Boolean),
-      steps: newSteps.split(/\n/).map((x) => x.trim()).filter(Boolean), tags: ['My recipes'], status: 'ready', saved: true,
+      ingredients, steps, tags: ['My recipes'],
+      status: ingredients.length && steps.length ? 'ready' : 'review', saved: true,
     };
     setRecipes((items) => [item, ...items]); setNewTitle(''); setNewIngredients(''); setNewSteps(''); setModal(null); setTab('Recipes');
   }
@@ -232,8 +312,8 @@ export default function App() {
   }
   function saveEditedRecipe() {
     if (!editingId || !newTitle.trim()) return;
-    const ingredients = newIngredients.split(/\n|,/).map((x) => x.trim()).filter(Boolean);
-    const steps = newSteps.split(/\n/).map((x) => x.trim()).filter(Boolean);
+    const ingredients = newIngredients.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const steps = newSteps.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     setRecipes((items) => items.map((item) => item.id === editingId ? { ...item, title: newTitle.trim(), ingredients, steps, status: ingredients.length && steps.length ? 'ready' : 'review' } : item));
     setSelectedRecipe((item) => item?.id === editingId ? { ...item, title: newTitle.trim(), ingredients, steps, status: ingredients.length && steps.length ? 'ready' : 'review' } : item);
     setEditingId(null); setNewTitle(''); setNewIngredients(''); setNewSteps(''); setModal('recipe');
@@ -242,6 +322,7 @@ export default function App() {
     if (!importUrl.trim() && !importText.trim()) return;
     const source = importUrl.trim();
     setImporting(true); setImportError('');
+    try {
     let importMessage = '';
     let pageRecipe: Awaited<ReturnType<typeof fetchRecipePage>> = null;
     if (source) {
@@ -269,7 +350,11 @@ export default function App() {
     }
     setRecipes((items) => [item, ...items]); setImportUrl(''); setImportText(''); setImportError(''); setModal(null); setTab('Recipes');
     setSelectedRecipe(item); setModal('recipe');
-    setImporting(false);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'The recipe could not be imported. Please try again.');
+    } finally {
+      setImporting(false);
+    }
   }
   function addToShopping(recipe: Recipe) {
     const missing = recipe.ingredients.filter((ingredient) => !hasPantryIngredient(ingredient, pantry));
@@ -304,7 +389,7 @@ export default function App() {
     const count = recipeMatch(recipe, pantry);
     return (
       <Pressable onPress={() => openRecipe(recipe)} style={[styles.recipeCard, compact && styles.recipeCardCompact]}>
-        <View style={styles.recipeImage}><Text style={styles.recipeEmoji}>{recipe.title.toLowerCase().includes('egg') ? '🍳' : recipe.title.toLowerCase().includes('pasta') ? '🍝' : recipe.title.toLowerCase().includes('rice') ? '🥣' : '🍲'}</Text><Pressable onPress={() => toggleSaved(recipe.id)} style={styles.heart}><Text style={{ fontSize: 17 }}>{recipe.saved ? '♥' : '♡'}</Text></Pressable></View>
+        <View style={styles.recipeImage}><Text style={styles.recipeEmoji}>{recipe.title.toLowerCase().includes('egg') ? '🍳' : recipe.title.toLowerCase().includes('pasta') ? '🍝' : recipe.title.toLowerCase().includes('rice') ? '🥣' : '🍲'}</Text><Pressable accessibilityRole="button" accessibilityLabel={recipe.saved ? `Remove ${recipe.title} from saved recipes` : `Save ${recipe.title}`} accessibilityState={{ selected: Boolean(recipe.saved) }} onPress={(event) => { event.stopPropagation(); toggleSaved(recipe.id); }} style={styles.heart}><Text style={{ fontSize: 17 }}>{recipe.saved ? '♥' : '♡'}</Text></Pressable></View>
         <View style={styles.recipeInfo}><Text style={styles.recipeTitle}>{recipe.title}</Text><Text style={styles.recipeSub}>{recipe.minutes} min  ·  {recipe.servings} servings  ·  {count}/{recipe.ingredients.length} ingredients here</Text>
           <View style={styles.tagRow}>{recipe.tags.slice(0, 2).map((tag) => <Pill key={tag}>{tag}</Pill>)}</View>
           {recipe.status === 'review' ? <Text style={styles.reviewNote}>Needs a quick review</Text> : null}
@@ -334,7 +419,13 @@ export default function App() {
       <View style={styles.pageIntro}><Text style={styles.eyebrow}>YOUR COOKBOOK</Text><Text style={styles.pageTitle}>Recipes</Text><Text style={styles.pageCopy}>Saved from anywhere, created by you, ready when you need them.</Text></View>
       <View style={styles.searchBox}><Text style={styles.searchIcon}>⌕</Text><TextInput value={search} onChangeText={setSearch} placeholder="Search recipes or tags" placeholderTextColor={COLORS.muted} style={styles.searchInput} /></View>
       <View style={styles.inlineActions}><Button label="＋ Import" onPress={() => setModal('import')} compact /><Button label="＋ Create" onPress={() => setModal('create')} secondary compact /></View>
-      <View style={styles.filterLine}><Pill>All {recipes.length}</Pill><Pill color={COLORS.greenSoft}>Saved {recipes.filter((r) => r.saved).length}</Pill><Pill color={COLORS.orangeSoft}>From pantry</Pill></View>
+      <View style={styles.filterLine}>
+        {(['all', 'saved', 'pantry'] as const).map((filter) => {
+          const label = filter === 'all' ? `All ${recipes.length}` : filter === 'saved' ? `Saved ${recipes.filter((recipe) => recipe.saved).length}` : 'From pantry';
+          const active = recipeFilter === filter;
+          return <Pressable key={filter} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setRecipeFilter(filter)}><Pill color={active ? COLORS.greenSoft : COLORS.pale}>{label}</Pill></Pressable>;
+        })}
+      </View>
       {visibleRecipes.map((recipe) => <RecipeCard key={recipe.id} recipe={recipe} />)}
       {visibleRecipes.length === 0 && <Text style={styles.emptyText}>No recipes match that search. Try another ingredient or title.</Text>}
     </>;
@@ -364,7 +455,7 @@ export default function App() {
           const additions: string[] = [];
           for (const name of missing) {
             const key = ingredientKey(name);
-            if (!current.has(key)) { current.add(key); additions.push(name); }
+            if (key && !current.has(key)) { current.add(key); additions.push(name); }
           }
           return [...items, ...additions.map((name) => ({ id: id(), name, checked: false }))];
         });
@@ -378,11 +469,11 @@ export default function App() {
     const checked = shopping.filter((item) => item.checked);
     return <>
       <View style={styles.pageIntro}><Text style={styles.eyebrow}>READY FOR THE SHOP</Text><Text style={styles.pageTitle}>Shopping list</Text><Text style={styles.pageCopy}>{unchecked.length} items left · built from recipes and your meal plan</Text></View>
-      <View style={styles.shopActions}><Button label="＋ Add item" onPress={() => setModal('shop-add')} compact /><Button label="Clear checked" onPress={() => setShopping((items) => items.filter((item) => !item.checked))} secondary compact /></View>
+      <View style={styles.shopActions}><Button label="＋ Add item" onPress={() => setModal('shop-add')} compact /><Button label="Clear checked" onPress={() => setShopping((items) => items.filter((item) => !item.checked))} secondary compact disabled={!checked.length} /></View>
       {shopping.length === 0 ? <View style={styles.emptyCard}><Text style={styles.emptyEmoji}>🛒</Text><Text style={styles.emptyTitle}>Your list is ready when you are</Text><Text style={styles.emptyText}>Open a recipe or build a weekly plan. PantryScout will add only what’s missing.</Text></View> : <>
         {unchecked.length > 0 && <SectionTitle title="To buy" />}
-        {unchecked.map((item) => <Pressable key={item.id} onPress={() => toggleShopping(item.id)} style={styles.shopRow}><View style={styles.checkbox} /><Text style={styles.shopName}>{item.name}</Text><Text style={styles.shopArrow}>›</Text></Pressable>)}
-        {checked.length > 0 && <><SectionTitle title="In your basket" /><Text style={styles.sectionHint}>Tap an item to move it back to your list.</Text>{checked.map((item) => <Pressable key={item.id} onPress={() => toggleShopping(item.id)} style={styles.shopRow}><View style={[styles.checkbox, styles.checkboxChecked]}><Text style={styles.checkmark}>✓</Text></View><Text style={[styles.shopName, styles.shopDone]}>{item.name}</Text></Pressable>)}</>}
+        {unchecked.map((item) => <Pressable key={item.id} accessibilityRole="checkbox" accessibilityState={{ checked: false }} onPress={() => toggleShopping(item.id)} style={styles.shopRow}><View style={styles.checkbox} /><Text style={styles.shopName}>{item.name}</Text></Pressable>)}
+        {checked.length > 0 && <><SectionTitle title="In your basket" /><Text style={styles.sectionHint}>Tap an item to move it back to your list.</Text>{checked.map((item) => <Pressable key={item.id} accessibilityRole="checkbox" accessibilityState={{ checked: true }} onPress={() => toggleShopping(item.id)} style={styles.shopRow}><View style={[styles.checkbox, styles.checkboxChecked]}><Text style={styles.checkmark}>✓</Text></View><Text style={[styles.shopName, styles.shopDone]}>{item.name}</Text></Pressable>)}</>}
       </>}
     </>;
   }
@@ -429,7 +520,7 @@ export default function App() {
       {selectedRecipe.status === 'review' ? <Text style={styles.reviewBox}>This recipe needs a quick review before cooking.</Text> : null}
       <SectionTitle title="Ingredients" />
       {selectedRecipe.ingredients.length ? selectedRecipe.ingredients.map((ingredient, index) => <Text key={`${ingredient}-${index}`} style={styles.detailLine}>•  {ingredient}</Text>) : <Text style={styles.emptyText}>No ingredients detected yet.</Text>}
-      {selectedRecipe.steps.length ? <><SectionTitle title="Method" />{selectedRecipe.steps.slice(0, 4).map((step, index) => <Text key={`${step}-${index}`} style={styles.detailStep}><Text style={styles.stepNumber}>{index + 1}. </Text>{step}</Text>)}</> : null}
+      {selectedRecipe.steps.length ? <><SectionTitle title="Method" />{selectedRecipe.steps.map((step, index) => <Text key={`${step}-${index}`} style={styles.detailStep}><Text style={styles.stepNumber}>{index + 1}. </Text>{step}</Text>)}</> : null}
       <View style={styles.modalButtonStack}><Button label="Edit recipe" onPress={() => beginEditRecipe(selectedRecipe)} secondary /><Button label="Start cook mode" onPress={() => { setCookStep(0); setModal('cook'); }} /><Button label="Add missing ingredients to list" onPress={() => addToShopping(selectedRecipe)} secondary /></View>
     </>;
     if (modal === 'cook' && selectedRecipe) return <>
@@ -453,23 +544,28 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style="dark" />
-      <View style={styles.topBar}><View style={styles.brandMark}><Text style={styles.brandIcon}>✳</Text></View><View style={styles.brandCopy}><Text style={styles.brandName}>PantryScout</Text><Text style={styles.brandLine}>A little help with dinner</Text></View><Pressable style={styles.topAction} onPress={() => setModal('import')}><Text style={styles.topActionText}>＋</Text></Pressable></View>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <View style={styles.topBar}><View style={styles.brandMark}><Text style={styles.brandIcon}>✳</Text></View><View style={styles.brandCopy}><Text style={styles.brandName}>PantryScout</Text><Text style={styles.brandLine}>A little help with dinner</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Import a recipe" style={styles.topAction} onPress={() => setModal('import')}><Text style={styles.topActionText}>＋</Text></Pressable></View>
+      <ScrollView ref={mainScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {tab === 'Today' ? renderToday() : tab === 'Recipes' ? renderRecipes() : tab === 'Pantry' ? renderPantry() : tab === 'Plan' ? renderPlan() : renderShop()}
         <View style={{ height: 22 }} />
       </ScrollView>
-      <View style={styles.tabBar}>{tabs.map((item) => <Pressable key={item.name} style={styles.tabItem} onPress={() => { setTab(item.name); setSearch(''); }}><Text style={[styles.tabEmoji, tab === item.name && styles.tabEmojiActive]}>{item.emoji}</Text><Text style={[styles.tabLabel, tab === item.name && styles.tabLabelActive]}>{item.name}</Text>{tab === item.name ? <View style={styles.tabDot} /> : null}</Pressable>)}</View>
-      <Modal visible={Boolean(modal)} transparent animationType="slide" onRequestClose={() => setModal(null)}>
-        <View style={styles.modalBackdrop}><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardWrap}>
-          <View style={styles.modalSheet}><View style={styles.modalGrabber} /><Pressable style={styles.modalClose} onPress={() => setModal(null)}><Text style={styles.modalCloseText}>×</Text></Pressable><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{renderModalContent()}<View style={{ height: 24 }} /></ScrollView></View>
+      <View style={styles.tabBar}>{tabs.map((item) => <Pressable key={item.name} accessibilityRole="tab" accessibilityLabel={item.name} accessibilityState={{ selected: tab === item.name }} hitSlop={4} style={styles.tabItem} onPress={() => { setTab(item.name); setSearch(''); }}><Text style={[styles.tabEmoji, tab === item.name && styles.tabEmojiActive]}>{item.emoji}</Text><Text style={[styles.tabLabel, tab === item.name && styles.tabLabelActive]}>{item.name}</Text>{tab === item.name ? <View style={styles.tabDot} /> : null}</Pressable>)}</View>
+      <Modal visible={Boolean(modal)} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setModal(null)}>
+        <View style={styles.modalBackdrop}><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardWrap}>
+          <View style={[styles.modalSheet, { paddingBottom: Math.max(20, insets.bottom + 12) }]}><View style={styles.modalGrabber} /><Pressable accessibilityRole="button" accessibilityLabel="Close dialog" style={styles.modalClose} onPress={() => setModal(null)}><Text style={styles.modalCloseText}>×</Text></Pressable><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{renderModalContent()}<View style={{ height: 24 }} /></ScrollView></View>
         </KeyboardAvoidingView></View>
       </Modal>
     </SafeAreaView>
   );
 }
 
+export default function App() {
+  return <SafeAreaProvider><PantryScoutApp /></SafeAreaProvider>;
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.cream },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 }, loadingText: { color: COLORS.muted, fontSize: 13 },
   topBar: { height: 72, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: COLORS.line, backgroundColor: COLORS.cream },
   brandMark: { width: 42, height: 42, borderRadius: 14, backgroundColor: COLORS.green, alignItems: 'center', justifyContent: 'center' }, brandIcon: { color: '#FFFDF6', fontSize: 24, fontWeight: '700' },
   brandCopy: { marginLeft: 10, flex: 1 }, brandName: { fontSize: 17, color: COLORS.ink, fontWeight: '800', letterSpacing: -0.35 }, brandLine: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
