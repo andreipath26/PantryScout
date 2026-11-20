@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
+import { useShareIntent } from 'expo-share-intent';
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchRecipePage } from './recipe-import';
 import {
@@ -127,6 +128,7 @@ function parseImportedText(raw: string, source: string): Recipe {
 }
 
 export default function App() {
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({ scheme: 'pantryscout' });
   const [tab, setTab] = useState<Tab>('Today');
   const [modal, setModal] = useState<ModalKind>(null);
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
@@ -162,6 +164,19 @@ export default function App() {
       }
     }).catch(() => {}).finally(() => setReady(true));
   }, []);
+
+  useEffect(() => {
+    if (!hasShareIntent) return;
+    const sharedText = shareIntent.text?.trim() || '';
+    const url = shareIntent.webUrl || sharedText.match(/https?:\/\/[^\s)]+/i)?.[0]?.replace(/[.,!?]+$/, '') || '';
+    const textWithoutUrl = url ? sharedText.replace(url, '').trim() : sharedText;
+    setImportUrl(url);
+    setImportText(textWithoutUrl);
+    setImportError('');
+    setTab('Recipes');
+    setModal('import');
+    resetShareIntent();
+  }, [hasShareIntent, shareIntent, resetShareIntent]);
 
   useEffect(() => {
     if (!ready) return;
@@ -229,7 +244,7 @@ export default function App() {
     setImporting(true); setImportError('');
     let importMessage = '';
     let pageRecipe: Awaited<ReturnType<typeof fetchRecipePage>> = null;
-    if (source && !importText.trim()) {
+    if (source) {
       try { pageRecipe = await fetchRecipePage(source); }
       catch (error) {
         importMessage = error instanceof Error ? error.message : 'The page could not be read. You can still save the link for later.';
@@ -237,10 +252,13 @@ export default function App() {
       }
     }
     const pasted = importText.trim() ? parseImportedText(importText.trim(), source) : null;
-    const item: Recipe = pasted
+    const hasPastedRecipe = Boolean(pasted && (pasted.ingredients.length || pasted.steps.length));
+    const item: Recipe = hasPastedRecipe && pasted
       ? pasted
       : pageRecipe
         ? { id: id(), ...pageRecipe, tags: ['Imported'], source, status: pageRecipe.ingredients.length && pageRecipe.steps.length ? 'ready' : 'review', saved: true }
+        : pasted
+          ? { ...pasted, source: source || undefined, status: 'review', description: importMessage || pasted.description }
         : {
           id: id(), title: source ? getSourceTitle(source) : 'Saved recipe', description: importMessage || 'Recipe link saved. Add the ingredients and method when you review it.',
           minutes: 30, servings: 2, ingredients: [], steps: [], tags: ['Imported'], source, status: 'review', saved: true,
