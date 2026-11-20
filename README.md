@@ -6,12 +6,12 @@ PantryScout is a personal cooking app built around the full path from finding a 
 
 ## Product areas
 
-- **Recipe inbox:** capture a recipe link or pasted recipe text, keep its source, and review the imported result. Recipe pages that publish Schema.org Recipe data are parsed into ingredients, steps, timing, and servings; other links are saved for manual completion.
+- **Recipe inbox:** share a recipe URL from another app or paste a link/text, keep its source, and review the imported result. Recipe pages that publish Schema.org Recipe data are parsed into ingredients, steps, timing, and servings; other links are saved for manual completion.
 - **Personal cookbook:** save, search, tag, create, and revisit recipes.
-- **Pantry:** keep ingredients, quantities, and use-by dates; flag items to use soon.
+- **Pantry:** keep a lightweight list of ingredients and items to use soon.
 - **PantryScout ideas:** rank saved recipes by pantry match and create a flexible recipe idea from available ingredients.
 - **Meal planner:** assign cookbook recipes to days of the week.
-- **Shopping list:** combine missing ingredients from recipes and plans, deduplicate common ingredient names, check items off, and add freeform items.
+- **Shopping list:** combine missing ingredients from recipes and plans, check items off, and add freeform items.
 - **Cook mode:** follow one recipe step at a time from a phone.
 
 ## Current build
@@ -27,7 +27,7 @@ npm install
 npm run start
 ```
 
-Then use Expo Go or a development build on Android/iOS. For the web preview, run `npm run web`.
+Then use Expo Go for the UI preview. Incoming system shares require a native development build or the Android APK because Expo Go cannot register PantryScout as a share target. For the web preview, run `npm run web`.
 
 ## Android preview build
 
