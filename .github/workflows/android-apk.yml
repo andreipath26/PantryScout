@@ -36,6 +36,9 @@ jobs:
       - name: Install JavaScript dependencies
         run: npm ci
 
+      - name: Type-check the app
+        run: npm run typecheck
+
       - name: Generate Android project
         run: npx expo prebuild --platform android --no-install --clean
 
