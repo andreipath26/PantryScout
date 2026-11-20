@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "PantryScout",
+    "slug": "pantryscout",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#F7F5EF"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.andreipath26.pantryscout"
+    },
+    "android": {
+      "package": "com.andreipath26.pantryscout",
+      "adaptiveIcon": {
+        "backgroundColor": "#F7F5EF"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
