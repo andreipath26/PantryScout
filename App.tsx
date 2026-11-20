@@ -242,7 +242,7 @@ export default function App() {
       : pageRecipe
         ? { id: id(), ...pageRecipe, tags: ['Imported'], source, status: pageRecipe.ingredients.length && pageRecipe.steps.length ? 'ready' : 'review', saved: true }
         : {
-          id: id(), title: source ? getSourceTitle(source) : pasted?.title || 'Saved recipe', description: importMessage || 'Recipe link saved. Add the ingredients and method when you review it.',
+          id: id(), title: source ? getSourceTitle(source) : 'Saved recipe', description: importMessage || 'Recipe link saved. Add the ingredients and method when you review it.',
           minutes: 30, servings: 2, ingredients: [], steps: [], tags: ['Imported'], source, status: 'review', saved: true,
         };
     if (!pageRecipe && source && !importText.trim() && !importMessage) {
