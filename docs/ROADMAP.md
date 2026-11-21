@@ -22,7 +22,9 @@
 ## Milestone 3 — Household kitchen data
 
 - [ ] Pantry categories, quantity units, freezer/fridge/cupboard locations, and expiry reminders
-- [ ] Barcode and receipt scanning with user confirmation
+- [x] Barcode lookup, fridge-photo food labels, and receipt OCR with an editable confirmation step (on-device image processing; barcode product lookup uses Open Food Facts)
+- [ ] Improve receipt-line parsing and validate Lidl, Aldi, Auchan, Carrefour, and other French receipt layouts against a real receipt corpus
+- [ ] PDF / retailer-account order import, image-label coverage improvements, expiry suggestions, and pantry location selection
 - [ ] Update pantry from cooking and completed shopping lists
 - [ ] Preferences, servings, equipment, time budget, hard allergy exclusions, and disliked ingredients
 - [ ] Export and restore user data
