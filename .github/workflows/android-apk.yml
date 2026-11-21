@@ -56,14 +56,35 @@ jobs:
           test "$(stat -c '%s' "$model_path")" = "344671744"
           echo "03e7da1eb1108b50dffaa9bb52cc7bcbad2eb0c66ca990267f480c1e545d2856  $model_path" | sha256sum --check --strict
 
-      - name: Build debug APK
+      - name: Build self-contained release APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
+
+      - name: Verify APK contains JavaScript bundle and local model
+        run: |
+          set -euo pipefail
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+          python3 - "$apk" <<'PY'
+          import sys
+          import zipfile
+
+          apk = sys.argv[1]
+          with zipfile.ZipFile(apk) as archive:
+              names = set(archive.namelist())
+          required = {
+              "assets/index.android.bundle",
+              "assets/pantry-scout-qwen3-0.6b.litertlm",
+          }
+          missing = required - names
+          if missing:
+              raise SystemExit(f"APK is missing required packaged files: {sorted(missing)}")
+          print("Verified: APK contains its offline JavaScript bundle and bundled AI model.")
+          PY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: pantryscout-android-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: pantryscout-android-release
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
