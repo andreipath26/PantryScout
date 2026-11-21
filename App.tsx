@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchRecipePage } from './recipe-import';
 import { searchOnlineMeals, type OnlineMeal } from './online-recipes';
+import { getLocalAIStatus, suggestPantryRecipeLocally, type LocalAIStatus } from './local-ai';
 import { lookupBarcode, makeCandidate, recognizeFridgePhoto, recognizeReceipt, type IntakeCandidate, type IntakeSource } from './pantry-intake';
 import {
   ActivityIndicator,
@@ -222,6 +223,8 @@ function PantryScoutApp() {
   const [intakeStore, setIntakeStore] = useState('');
   const [intakeBusy, setIntakeBusy] = useState(false);
   const [intakeError, setIntakeError] = useState('');
+  const [localAIStatus, setLocalAIStatus] = useState<LocalAIStatus>('missing');
+  const [pantryRecipeBusy, setPantryRecipeBusy] = useState(false);
   const [barcodeLookupBusy, setBarcodeLookupBusy] = useState(false);
   const barcodeSeen = useRef(false);
   const [recipes, setRecipes] = useState<Recipe[]>(SEED_RECIPES);
@@ -281,6 +284,13 @@ function PantryScoutApp() {
     });
     return () => subscription.remove();
   }, [modal, tab]);
+
+  useEffect(() => {
+    if (modal !== 'settings') return;
+    let active = true;
+    getLocalAIStatus().then((status) => { if (active) setLocalAIStatus(status); });
+    return () => { active = false; };
+  }, [modal]);
 
   useEffect(() => {
     mainScroll.current?.scrollTo({ y: 0, animated: false });
@@ -417,7 +427,8 @@ function PantryScoutApp() {
         if (!candidates.length) setIntakeError('The on-device model did not find clear food items. Add them manually below or try a closer photo.');
       } else {
         const receiptResult = await recognizeReceipt(uri);
-        setIntakeCandidates(receiptResult.items.map((name) => makeCandidate(name, 'receipt')));
+        setIntakeCandidates(receiptResult.lines.map((line) => makeCandidate(line.name, 'receipt', { quantity: line.quantity, price: line.price })));
+        if (receiptResult.aiUsed) setIntakeError('Local AI helped interpret the OCR. Check every item before adding it.');
         const textProbe = receiptResult.text.toLowerCase();
         const store = ['Lidl', 'Aldi', 'Auchan', 'Carrefour', 'Intermarché', 'Leclerc', 'Monoprix', 'Franprix', 'Système U'].find((name) => textProbe.includes(name.toLowerCase()));
         setIntakeStore(store || 'Receipt');
@@ -472,8 +483,23 @@ function PantryScoutApp() {
     setShopping((items) => [...items, { id: id(), name: shopName.trim(), checked: false }]);
     setShopName(''); setModal(null);
   }
-  function createFromPantry() {
+  async function createFromPantry() {
     if (!pantry.length) { setTab('Pantry'); setModal('pantry'); return; }
+    setPantryRecipeBusy(true);
+    try {
+    const suggested = await suggestPantryRecipeLocally(pantry.map(({ name, quantity, expires }) => ({ name, quantity, expires })));
+    if (suggested) {
+      const hasPasta = suggested.ingredients.some((name) => /pasta|noodle/i.test(name));
+      const hasEgg = suggested.ingredients.some((name) => /egg/i.test(name));
+      const item: Recipe = {
+        id: id(), title: suggested.title, description: suggested.description,
+        minutes: suggested.minutes, servings: suggested.servings,
+        ingredients: suggested.ingredients, steps: suggested.steps,
+        tags: [...suggested.tags, 'On-device AI'], imageKey: hasPasta ? 'pasta' : hasEgg ? 'omelette' : 'skillet', status: 'ready', saved: true,
+      };
+      setRecipes((items) => [item, ...items]); setSelectedRecipe(item); setRecipeView('saved'); setTab('Recipes'); setModal('recipe');
+      return;
+    }
     const names = [...pantry].sort((a, b) => Number(isUseSoon(b.expires)) - Number(isUseSoon(a.expires))).slice(0, 5).map((item) => item.name);
     const hasPasta = names.some((name) => /pasta|noodle/i.test(name));
     const hasEgg = names.some((name) => /egg/i.test(name));
@@ -489,6 +515,7 @@ function PantryScoutApp() {
       tags: ['Pantry creation', 'Use what you have'], imageKey: hasPasta ? 'pasta' : hasEgg ? 'omelette' : 'skillet', status: 'ready', saved: true,
     };
     setRecipes((items) => [item, ...items]); setSelectedRecipe(item); setRecipeView('saved'); setTab('Recipes'); setModal('recipe');
+    } finally { setPantryRecipeBusy(false); }
   }
   function createRecipe() {
     if (!newTitle.trim()) return;
@@ -623,7 +650,7 @@ function PantryScoutApp() {
       <View style={styles.categoryHeader}><Text style={styles.sectionTitle}>Explore recipes</Text><Pressable onPress={() => { setTab('Recipes'); setRecipeView('saved'); }}><Text style={styles.link}>See all  ›</Text></Pressable></View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRail}>{['For you', 'Quick', 'Vegetarian', 'Use soon'].map((category) => <Pressable key={category} onPress={() => setHomeCategory(category)} style={[styles.categoryChip, homeCategory === category && styles.categoryChipActive]}><Text style={[styles.categoryText, homeCategory === category && styles.categoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
       <View style={styles.recipeRail}>{categoryMatches.slice(0, 3).map(({ recipe }) => <RecipeCard key={recipe.id} recipe={recipe} compact />)}</View>
-      <View style={styles.assistantCard}><View style={styles.assistantTop}><View style={styles.assistantOrb}><Text style={styles.assistantOrbText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.assistantEyebrow}>YOUR SOUS-CHEF</Text><Text style={styles.assistantTitle}>A little kitchen inspiration</Text></View><Text style={styles.assistantSpark}>✧</Text></View><Text style={styles.assistantCopy}>{useSoon.length ? 'Let’s rescue ' + useSoon.slice(0, 2).map((item) => item.name.toLowerCase()).join(' and ') + ' with a dinner made from your pantry.' : 'Your pantry has ' + pantry.length + ' ingredients ready to turn into something delicious.'}</Text><Pressable onPress={createFromPantry} style={styles.assistantAction}><Text style={styles.assistantActionText}>Make me a pantry recipe  ↗</Text></Pressable></View>
+      <View style={styles.assistantCard}><View style={styles.assistantTop}><View style={styles.assistantOrb}><Text style={styles.assistantOrbText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.assistantEyebrow}>YOUR SOUS-CHEF</Text><Text style={styles.assistantTitle}>A little kitchen inspiration</Text></View><Text style={styles.assistantSpark}>✧</Text></View><Text style={styles.assistantCopy}>{useSoon.length ? 'Let’s rescue ' + useSoon.slice(0, 2).map((item) => item.name.toLowerCase()).join(' and ') + ' with a dinner made from your pantry.' : 'Your pantry has ' + pantry.length + ' ingredients ready to turn into something delicious.'}</Text><Pressable onPress={createFromPantry} disabled={pantryRecipeBusy} style={[styles.assistantAction, pantryRecipeBusy && { opacity: 0.65 }]}><Text style={styles.assistantActionText}>{pantryRecipeBusy ? 'Thinking on this device…' : 'Make me a pantry recipe  ↗'}</Text></Pressable></View>
       <View style={styles.levelCard}><View style={styles.levelTop}><View><Text style={styles.levelEyebrow}>CHEF JOURNEY</Text><Text style={styles.levelTitle}>Level {level} · Home cook</Text></View><View style={styles.pointsBadge}><Text style={styles.pointsBadgeText}>✦  {chefPoints} pts</Text></View></View><View style={styles.progressTrack}><View style={[styles.progressFill, { width: levelProgress + '%' }]} /></View><Text style={styles.levelNote}>{300 - (chefPoints % 300)} points to your next kitchen badge</Text></View>
       <View style={styles.homeQuickActions}><Pressable style={styles.quickAction} onPress={() => { setRecipeView('online'); setTab('Recipes'); }}><Text style={styles.quickActionIcon}>⌕</Text><Text style={styles.quickActionText}>Search online</Text></Pressable><Pressable style={styles.quickAction} onPress={() => setTab('Pantry')}><Text style={styles.quickActionIcon}>▤</Text><Text style={styles.quickActionText}>My pantry</Text></Pressable><Pressable style={styles.quickAction} onPress={() => setTab('Plan')}><Text style={styles.quickActionIcon}>▦</Text><Text style={styles.quickActionText}>Meal plan</Text></Pressable></View>
     </>;
@@ -694,6 +721,8 @@ function PantryScoutApp() {
     if (modal === 'settings') return <>
       <Text style={styles.modalEyebrow}>PERSONALISE PANTRYSCOUT</Text><Text style={styles.modalTitle}>Appearance</Text><Text style={styles.modalCopy}>Choose how PantryScout looks. System follows your device setting.</Text>
       <View style={styles.themeOptions}>{(['light', 'dark', 'system'] as const).map((mode) => <Pressable key={mode} accessibilityRole="radio" accessibilityState={{ checked: themeMode === mode }} onPress={() => setThemeMode(mode)} style={[styles.themeOption, themeMode === mode && styles.themeOptionSelected]}><View style={styles.themeOptionCopy}><Text style={styles.themeOptionTitle}>{mode === 'light' ? 'Light' : mode === 'dark' ? 'Dark' : 'System'}</Text><Text style={styles.themeOptionDescription}>{mode === 'system' ? 'Match your device appearance' : `${mode[0].toUpperCase()}${mode.slice(1)} colours, always`}</Text></View><View style={[styles.radioOuter, themeMode === mode && styles.radioOuterSelected]}>{themeMode === mode ? <View style={styles.radioInner} /> : null}</View></Pressable>)}</View>
+      <SectionTitle title="Private on-device AI" />
+      <Text style={styles.modalCopy}>{localAIStatus === 'ready' ? 'Qwen3 0.6B is bundled with PantryScout and runs on this phone. Receipt text and pantry contents stay on-device during AI processing.' : localAIStatus === 'unsupported' ? 'The bundled language model currently runs in the Android app. Receipt OCR and PantryScout’s built-in recipe suggestions still work on other platforms.' : 'Checking the built-in Qwen3 0.6B model… It is part of the app package, not a separate download.'}</Text>
     </>;
     if (modal === 'online-preview' && selectedOnlineMeal) {
       const recipe = toSavedOnlineRecipe(selectedOnlineMeal);
@@ -743,6 +772,7 @@ function PantryScoutApp() {
           <TextInput value={candidate.name} onChangeText={(name) => updateIntakeCandidate(candidate.id, { name })} placeholder="Product or ingredient" placeholderTextColor={COLORS.muted} style={[styles.input, { flex: 1, marginBottom: 0 }]} />
           <TextInput value={candidate.quantity} onChangeText={(quantity) => updateIntakeCandidate(candidate.id, { quantity })} placeholder="Qty" placeholderTextColor={COLORS.muted} style={[styles.input, { width: 74, marginBottom: 0, textAlign: 'center' }]} />
         </View>
+        {candidate.price ? <Text style={[styles.sectionHint, { marginTop: 6, marginBottom: 0, marginLeft: 34 }]}>Receipt price · {candidate.price}</Text> : null}
         {typeof candidate.confidence === 'number' ? <Text style={[styles.sectionHint, { marginTop: 6, marginBottom: 0, marginLeft: 34 }]}>Photo match · {Math.round(candidate.confidence * 100)}% confidence</Text> : null}
         {candidate.barcode ? <Text style={[styles.sectionHint, { marginTop: 6, marginBottom: 0, marginLeft: 34 }]}>Barcode · {candidate.barcode}</Text> : null}
       </View>)}

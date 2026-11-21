@@ -45,6 +45,17 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --no-install --clean
 
+      - name: Download and verify bundled multilingual model
+        run: |
+          set -euo pipefail
+          model_dir="android/app/src/main/assets"
+          mkdir -p "$model_dir"
+          model_path="$model_dir/pantry-scout-qwen3-0.6b.litertlm"
+          model_url="https://huggingface.co/litert-community/Qwen3-0.6B/resolve/main/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm"
+          curl --fail --location --retry 3 --show-error "$model_url" --output "$model_path"
+          test "$(stat -c '%s' "$model_path")" = "344686592"
+          echo "96491bb0f78fa68098bf8f1d3628194c97041aff7894f8cc29303b3acdb877a9  $model_path" | sha256sum --check --strict
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug

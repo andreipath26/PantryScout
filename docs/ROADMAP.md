@@ -23,6 +23,7 @@
 
 - [ ] Pantry categories, quantity units, freezer/fridge/cupboard locations, and expiry reminders
 - [x] Barcode lookup, fridge-photo food labels, and receipt OCR with an editable confirmation step (on-device image processing; barcode product lookup uses Open Food Facts)
+- [x] Bundle a multilingual local language model in Android; use it to normalize receipt OCR and suggest pantry-only recipes, with deterministic validation and review
 - [ ] Improve receipt-line parsing and validate Lidl, Aldi, Auchan, Carrefour, and other French receipt layouts against a real receipt corpus
 - [ ] PDF / retailer-account order import, image-label coverage improvements, expiry suggestions, and pantry location selection
 - [ ] Update pantry from cooking and completed shopping lists

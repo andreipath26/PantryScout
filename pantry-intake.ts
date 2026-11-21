@@ -1,5 +1,6 @@
 import ImageLabeling from '@react-native-ml-kit/image-labeling';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
+import { parseReceiptLocally } from './local-ai';
 
 export type IntakeSource = 'barcode' | 'fridge_photo' | 'receipt' | 'manual';
 export type IntakeCandidate = {
@@ -9,6 +10,7 @@ export type IntakeCandidate = {
   source: IntakeSource;
   confidence?: number;
   barcode?: string;
+  price?: string;
   selected: boolean;
 };
 
@@ -78,10 +80,13 @@ export function parseReceiptText(text: string): string[] {
   return candidates;
 }
 
-export async function recognizeReceipt(uri: string): Promise<{ items: string[]; text: string }> {
+export async function recognizeReceipt(uri: string): Promise<{ items: string[]; text: string; lines: Array<{ name: string; quantity: string; price?: string }>; aiUsed: boolean }> {
   const result = await TextRecognition.recognize(uri);
   const text = result.text || '';
-  return { items: parseReceiptText(text), text };
+  const localLines = await parseReceiptLocally(text);
+  if (localLines?.length) return { items: localLines.map((line) => line.name), text, lines: localLines, aiUsed: true };
+  const items = parseReceiptText(text);
+  return { items, text, lines: items.map((name) => ({ name, quantity: '1' })), aiUsed: false };
 }
 
 export function makeCandidate(name: string, source: IntakeSource, options: Partial<IntakeCandidate> = {}): IntakeCandidate {
