@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - codex/build-pantry-scout-mvp
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,7 @@ permissions:
 
 jobs:
   android-apk:
-    name: Build self-contained Android APK
+    name: Build installable Android APK
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -32,16 +33,53 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - name: Install JavaScript dependencies
         run: npm ci
 
+      - name: Typecheck app
+        run: npm run typecheck
+
       - name: Generate Android project
         run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Download and verify bundled multilingual model
+        run: |
+          set -euo pipefail
+          model_dir="android/app/src/main/assets"
+          mkdir -p "$model_dir"
+          model_path="$model_dir/pantry-scout-qwen3-0.6b.litertlm"
+          model_url="https://huggingface.co/litert-community/Qwen3-0.6B/resolve/e6bb3e4a1eb3f663153f0c1c12b735d64be657a7/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm"
+          curl --fail --location --retry 3 --show-error "$model_url" --output "$model_path"
+          test "$(stat -c '%s' "$model_path")" = "344671744"
+          echo "03e7da1eb1108b50dffaa9bb52cc7bcbad2eb0c66ca990267f480c1e545d2856  $model_path" | sha256sum --check --strict
 
       - name: Build self-contained release APK
         working-directory: android
         run: ./gradlew assembleRelease
+
+      - name: Verify APK contains JavaScript bundle and local model
+        run: |
+          set -euo pipefail
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+          python3 - "$apk" <<'PY'
+          import sys
+          import zipfile
+
+          apk = sys.argv[1]
+          with zipfile.ZipFile(apk) as archive:
+              names = set(archive.namelist())
+          required = {
+              "assets/index.android.bundle",
+              "assets/pantry-scout-qwen3-0.6b.litertlm",
+          }
+          missing = required - names
+          if missing:
+              raise SystemExit(f"APK is missing required packaged files: {sorted(missing)}")
+          print("Verified: APK contains its offline JavaScript bundle and bundled AI model.")
+          PY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
