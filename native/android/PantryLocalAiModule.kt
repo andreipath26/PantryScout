@@ -43,7 +43,7 @@ class PantryLocalAiModule(private val appContext: ReactApplicationContext) :
           }
         }
         val answer = loaded.createConversation().use { conversation ->
-          conversation.sendMessage(prompt).text
+          conversation.sendMessage(prompt).toString()
         }
         promise.resolve(answer)
       } catch (error: Exception) {
@@ -71,6 +71,6 @@ class PantryLocalAiModule(private val appContext: ReactApplicationContext) :
   companion object {
     private const val MODEL_ASSET = "pantry-scout-qwen3-0.6b.litertlm"
     private const val MIN_MODEL_BYTES = 300L * 1024L * 1024L
-    private const val EXPECTED_MODEL_BYTES = 344_686_592L
+    private const val EXPECTED_MODEL_BYTES = 344_671_744L
   }
 }
