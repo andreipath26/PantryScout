@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "scheme": "pantryscout",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "splash": {
       "backgroundColor": "#F7F5EF"
     },
